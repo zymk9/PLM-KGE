@@ -1,0 +1,6 @@
+[submodule "SimKGC"]
+	path = SimKGC
+	url = https://github.com/intfloat/SimKGC.git
+[submodule "CAKE"]
+	path = CAKE
+	url = https://github.com/ngl567/CAKE.git
