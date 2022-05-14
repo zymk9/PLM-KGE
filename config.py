@@ -15,6 +15,8 @@ parser.add_argument('--train-path', default='', type=str, metavar='N',
                     help='path to training data')
 parser.add_argument('--valid-path', default='', type=str, metavar='N',
                     help='path to valid data')
+parser.add_argument('--concept-path', default='', type=str, 
+                    help='path to concept data')
 parser.add_argument('--model-dir', default='', type=str, metavar='N',
                     help='path to model dir')
 parser.add_argument('--warmup', default=400, type=int, metavar='N',
@@ -33,6 +35,8 @@ parser.add_argument('--t', default=0.05, type=float,
                     help='temperature parameter')
 parser.add_argument('--use-link-graph', action='store_true',
                     help='use neighbors from link graph as context')
+parser.add_argument('--use-concept-data', action='store_true',
+                    help='use the concept data to adjust the contrastive loss')
 parser.add_argument('--eval-every-n-step', default=10000, type=int,
                     help='evaluate every n steps')
 parser.add_argument('--pre-batch', default=0, type=int,

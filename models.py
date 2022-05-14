@@ -28,7 +28,16 @@ class CustomBertModel(nn.Module, ABC):
         super().__init__()
         self.args = args
         self.config = AutoConfig.from_pretrained(args.pretrained_model)
-        self.log_inv_t = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+
+        # For 1-1, N-1 relations
+        self.log_inv_t0 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+        # For 1-N, N-N relations
+        self.log_inv_t1 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+        # For negatives within the same domain as the positive
+        self.log_inv_t2 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+        # For negatives within different domains
+        self.log_inv_t3 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+
         self.add_margin = args.additive_margin
         self.batch_size = args.batch_size
         self.pre_batch = args.pre_batch
@@ -91,7 +100,15 @@ class CustomBertModel(nn.Module, ABC):
         logits = hr_vector.mm(tail_vector.t())
         if self.training:
             logits -= torch.zeros(logits.size()).fill_diagonal_(self.add_margin).to(logits.device)
-        logits *= self.log_inv_t.exp()
+
+        per_relation_t = None
+        if self.args.use_concept_data:
+            per_relation_t = self._compute_per_relation_t(batch_dict['rel_types']).unsqueeze(-1)
+            per_tail_t = self._compute_per_tail_t(batch_dict['tail_doms'])
+            per_logit_t = (per_relation_t + per_tail_t).exp()   # use the sum of the two log_inv_t
+            logits = logits * per_logit_t
+        else:
+            logits = logits * self.log_inv_t0.exp()
 
         triplet_mask = batch_dict.get('triplet_mask', None)
         if triplet_mask is not None:
@@ -103,7 +120,10 @@ class CustomBertModel(nn.Module, ABC):
 
         if self.args.use_self_negative and self.training:
             head_vector = output_dict['head_vector']
-            self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * self.log_inv_t.exp()
+            if self.args.use_concept_data:
+                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * (per_relation_t + self.log_inv_t3).exp()
+            else:
+                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * self.log_inv_t3.exp()
             self_negative_mask = batch_dict['self_negative_mask']
             self_neg_logits.masked_fill_(~self_negative_mask, -1e4)
             logits = torch.cat([logits, self_neg_logits.unsqueeze(1)], dim=-1)
@@ -113,6 +133,20 @@ class CustomBertModel(nn.Module, ABC):
                 'inv_t': self.log_inv_t.detach().exp(),
                 'hr_vector': hr_vector.detach(),
                 'tail_vector': tail_vector.detach()}
+
+    def _compute_per_relation_t(self, rel_types: torch.tensor) -> torch.tensor:
+        t = torch.zeros_like(rel_types).to(rel_types.device)
+        t[rel_types == 0] = self.log_inv_t0
+        t[rel_types == 1] = self.log_inv_t1
+        return t
+
+    def _compute_per_tail_t(self, tail_doms: torch.tensor) -> torch.tensor:
+        t = torch.ones(tail_doms.size(0), tail_doms.size(0)).to(tail_doms.device) * self.log_inv_t3
+        for i in range(tail_doms.size(0)):
+            mask = tail_doms == tail_doms[i]
+            t[i, mask] = self.log_inv_t2
+
+        return t
 
     def _compute_pre_batch_logits(self, hr_vector: torch.tensor,
                                   tail_vector: torch.tensor,

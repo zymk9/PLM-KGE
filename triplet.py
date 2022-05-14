@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from collections import deque
 
 from logger_config import logger
+from preprocess import _normalize_fb15k237_relation
 
 
 @dataclass
@@ -119,6 +120,93 @@ class LinkGraph:
                         if len(seen_eids) > max_nodes:
                             return set()
         return set([entity_dict.entity_to_idx(e_id) for e_id in seen_eids])
+
+
+class ConceptDict:
+
+    def __init__(self, concept_dict_dir: str):
+        logger.info('Start to build concept dictionary from {}'.format(concept_dict_dir))
+        self.rel2dom_h = {} # relation idx -> set(domain_head idx)
+        self.rel2dom_t = {} # relation idx -> set(domain_tail idx)
+        self.rel2nn = {}    # relation idx -> 0, 1, 2, 3 (1-1, 1-N, N-1, N-N)
+        self.dom2ent = {}   # domain idx -> set(entity idx)
+        self.ent2dom = {}   # entity idx -> set(domain idx)
+        self.rel2idx = {}   # relation -> idx
+        self.ent2idx = {}   # entity id -> idx
+
+        self._load(concept_dict_dir)
+        self._add_inversed_relations()
+
+    def _load(self, dir: str):
+        with open(os.path.join(dir, 'rel2dom_h.json')) as f:
+            self.rel2dom_h = json.load(f)
+            self.rel2dom_h = {int(k): set(vals) for k, vals in self.rel2dom_h.items()}
+
+        with open(os.path.join(dir, 'rel2dom_t.json')) as f:
+            self.rel2dom_t = json.load(f)
+            self.rel2dom_t = {int(k): set(vals) for k, vals in self.rel2dom_t.items()}
+
+        with open(os.path.join(dir, 'rel2nn.json')) as f:
+            self.rel2nn = json.load(f)
+            self.rel2nn = {int(k): int(v) for k, v in self.rel2nn.items()}
+
+        with open(os.path.join(dir, 'dom_ent.json')) as f:
+            self.dom2ent = json.load(f)
+            self.dom2ent = {int(k): set(vals) for k, vals in self.dom2ent.items()}
+
+        with open(os.path.join(dir, 'ent_dom.json')) as f:
+            self.ent2dom = json.load(f)
+            self.ent2dom = {int(k): set(vals) for k, vals in self.ent2dom.items()}
+
+        with open(os.path.join(dir, 'relations.dict')) as f:
+            for line in f:
+                rel_idx, rel = line.strip().split('\t')
+                self.rel2idx[_normalize_fb15k237_relation(rel)] = int(rel_idx)  # consistent with SimKGC
+
+        with open(os.path.join(dir, 'entities.dict')) as f:
+            for line in f:
+                ent_idx, ent = line.strip().split('\t')
+                self.ent2idx[ent] = int(ent_idx)
+
+    # Add concept data for inversed relations
+    def _add_inversed_relations(self):
+        cur_idx = max(self.rel2idx.values()) + 1
+        inv_rel_dict = {}
+        for rel, idx in self.rel2idx.items():
+            inv_rel = "inverse {}".format(rel)
+            inv_rel_dict[inv_rel] = cur_idx
+            self.rel2dom_h[cur_idx] = self.rel2dom_t[idx]
+            self.rel2dom_t[cur_idx] = self.rel2dom_h[idx]
+            
+            rel_type = self.rel2nn[idx]
+            if rel_type == 1 or rel_type == 2:
+                rel_type = 3 - rel_type
+            self.rel2nn[cur_idx] = rel_type
+            cur_idx += 1
+        
+        self.rel2idx.update(inv_rel_dict)
+
+    def get_rel_type(self, rel: str) -> int:
+        return self.rel2nn[self.rel2idx[rel]]
+
+    # Return duduced domain index for head entity
+    def deduce_head_dom(self, head_id: str, rel: str) -> int:
+        head_idx = self.ent2idx[head_id]
+        rel_idx = self.rel2idx[rel]
+        head_dom = self.ent2dom[head_idx]
+        rel_dom = self.rel2dom_h[rel_idx]
+        return next(iter(head_dom.intersection(rel_dom)))
+
+    # Return duduced domain index for tail entity
+    def duduce_tail_dom(self, tail_id: str, rel: str) -> int:
+        tail_idx = self.ent2idx[tail_id]
+        rel_idx = self.rel2idx[rel]
+        tail_dom = self.ent2dom[tail_idx]
+        rel_dom = self.rel2dom_t[rel_idx]
+        return next(iter(tail_dom.intersection(rel_dom)))
+
+    def get_ent_idx(self, ent_id: str) -> int:
+        return self.ent2idx[ent_id]
 
 
 def reverse_triplet(obj):
