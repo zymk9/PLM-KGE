@@ -19,6 +19,7 @@ class ModelOutput:
     logits: torch.tensor
     labels: torch.tensor
     inv_t: torch.tensor
+    t_scale: torch.tensor
     hr_vector: torch.tensor
     tail_vector: torch.tensor
 
@@ -29,14 +30,8 @@ class CustomBertModel(nn.Module, ABC):
         self.args = args
         self.config = AutoConfig.from_pretrained(args.pretrained_model)
 
-        # For 1-1, N-1 relations
-        self.log_inv_t0 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
-        # For 1-N, N-N relations
-        self.log_inv_t1 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
-        # For negatives within the same domain as the positive
-        self.log_inv_t2 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
-        # For negatives within different domains
-        self.log_inv_t3 = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+        self.log_inv_t = torch.nn.Parameter(torch.tensor(1.0 / args.t).log(), requires_grad=args.finetune_t)
+        self.t_scale = torch.nn.Parameter(torch.tensor(args.t_scale), requires_grad=args.finetune_t)
 
         self.add_margin = args.additive_margin
         self.batch_size = args.batch_size
@@ -48,6 +43,7 @@ class CustomBertModel(nn.Module, ABC):
                              persistent=False)
         self.offset = 0
         self.pre_batch_exs = [None for _ in range(num_pre_batch_vectors)]
+        self.pre_batch_tail_doms = [None] * self.pre_batch
 
         self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
         self.tail_bert = deepcopy(self.hr_bert)
@@ -104,26 +100,27 @@ class CustomBertModel(nn.Module, ABC):
         per_relation_t = None
         if self.args.use_concept_data:
             per_relation_t = self._compute_per_relation_t(batch_dict['rel_types']).unsqueeze(-1)
-            per_tail_t = self._compute_per_tail_t(batch_dict['tail_doms'])
-            per_logit_t = (per_relation_t + per_tail_t).exp()   # use the sum of the two log_inv_t
-            logits = logits * per_logit_t
+            per_tail_t = self._compute_per_tail_t(batch_dict['tail_doms'], batch_dict['tail_doms'])
+            per_logit_t = (per_relation_t * per_tail_t) * self.log_inv_t
+            logits = logits * per_logit_t.exp()
         else:
-            logits = logits * self.log_inv_t0.exp()
+            logits = logits * self.log_inv_t.exp()
 
         triplet_mask = batch_dict.get('triplet_mask', None)
         if triplet_mask is not None:
             logits.masked_fill_(~triplet_mask, -1e4)
 
         if self.pre_batch > 0 and self.training:
-            pre_batch_logits = self._compute_pre_batch_logits(hr_vector, tail_vector, batch_dict)
+            pre_batch_logits = self._compute_pre_batch_logits(hr_vector, tail_vector, batch_dict, per_relation_t)
             logits = torch.cat([logits, pre_batch_logits], dim=-1)
 
         if self.args.use_self_negative and self.training:
             head_vector = output_dict['head_vector']
             if self.args.use_concept_data:
-                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * (per_relation_t + self.log_inv_t3).exp()
+                inv_t = ((per_relation_t * self.t_scale) * self.log_inv_t).exp().squeeze()
+                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * inv_t
             else:
-                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * self.log_inv_t3.exp()
+                self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * self.log_inv_t.exp()
             self_negative_mask = batch_dict['self_negative_mask']
             self_neg_logits.masked_fill_(~self_negative_mask, -1e4)
             logits = torch.cat([logits, self_neg_logits.unsqueeze(1)], dim=-1)
@@ -131,37 +128,51 @@ class CustomBertModel(nn.Module, ABC):
         return {'logits': logits,
                 'labels': labels,
                 'inv_t': self.log_inv_t.detach().exp(),
+                't_scale': self.t_scale.detach(),
                 'hr_vector': hr_vector.detach(),
                 'tail_vector': tail_vector.detach()}
 
     def _compute_per_relation_t(self, rel_types: torch.tensor) -> torch.tensor:
-        t = torch.zeros_like(rel_types).to(rel_types.device)
-        t[rel_types == 0] = self.log_inv_t0
-        t[rel_types == 1] = self.log_inv_t1
+        t = torch.ones_like(rel_types, dtype=self.t_scale.dtype).to(rel_types.device)
+        t[rel_types == 0] = self.t_scale
         return t
 
-    def _compute_per_tail_t(self, tail_doms: torch.tensor) -> torch.tensor:
-        t = torch.ones(tail_doms.size(0), tail_doms.size(0)).to(tail_doms.device) * self.log_inv_t3
-        for i in range(tail_doms.size(0)):
-            mask = tail_doms == tail_doms[i]
-            t[i, mask] = self.log_inv_t2
+    def _compute_per_tail_t(self, gt_doms: torch.tensor, tail_doms: torch.tensor) -> torch.tensor:
+        t = torch.ones(gt_doms.size(0), tail_doms.size(0), dtype=self.t_scale.dtype).to(gt_doms.device)
+        for i in range(gt_doms.size(0)):
+            mask = tail_doms != gt_doms[i]
+            t[i, mask] = self.t_scale
 
         return t
 
     def _compute_pre_batch_logits(self, hr_vector: torch.tensor,
                                   tail_vector: torch.tensor,
-                                  batch_dict: dict) -> torch.tensor:
+                                  batch_dict: dict,
+                                  per_relation_t: torch.tensor = None) -> torch.tensor:
         assert tail_vector.size(0) == self.batch_size
         batch_exs = batch_dict['batch_data']
         # batch_size x num_neg
         pre_batch_logits = hr_vector.mm(self.pre_batch_vectors.clone().t())
-        pre_batch_logits *= self.log_inv_t.exp() * self.args.pre_batch_weight
+
+        if self.args.use_concept_data and per_relation_t is not None:
+            if self.pre_batch_tail_doms[-1] is not None:
+                pre_batch_tail_doms = torch.cat(self.pre_batch_tail_doms, dim=0)
+                per_tail_t = self._compute_per_tail_t(batch_dict['tail_doms'], pre_batch_tail_doms)
+                t = (per_relation_t * per_tail_t * self.log_inv_t).exp()
+                pre_batch_logits *= t * self.args.pre_batch_weight
+            else:
+                t = (per_relation_t * self.t_scale * self.log_inv_t).exp()
+                pre_batch_logits *= t * self.args.pre_batch_weight
+        else:
+            pre_batch_logits *= self.log_inv_t.exp() * self.args.pre_batch_weight
+
         if self.pre_batch_exs[-1] is not None:
             pre_triplet_mask = construct_mask(batch_exs, self.pre_batch_exs).to(hr_vector.device)
             pre_batch_logits.masked_fill_(~pre_triplet_mask, -1e4)
 
         self.pre_batch_vectors[self.offset:(self.offset + self.batch_size)] = tail_vector.data.clone()
         self.pre_batch_exs[self.offset:(self.offset + self.batch_size)] = batch_exs
+        self.pre_batch_tail_doms[self.offset // self.batch_size] = batch_dict['tail_doms']
         self.offset = (self.offset + self.batch_size) % len(self.pre_batch_exs)
 
         return pre_batch_logits

@@ -193,8 +193,8 @@ def collate(batch_data: List[dict]) -> dict:
     batch_exs = [ex['obj'] for ex in batch_data]
 
     # Pass in concept data
-    rel_types = torch.LongTensor([ex.rel_type for ex in batch_exs]) if args.use_concept_data else []
-    tail_doms = torch.LongTensor([ex.tail_dom for ex in batch_exs]) if args.use_concept_data else []
+    rel_types = torch.LongTensor([ex['rel_type'] for ex in batch_data]) if args.use_concept_data else []
+    tail_doms = torch.LongTensor([ex['tail_dom'] for ex in batch_data]) if args.use_concept_data else []
 
     batch_dict = {
         'hr_token_ids': hr_token_ids,

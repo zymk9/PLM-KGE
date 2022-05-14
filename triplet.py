@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from collections import deque
 
 from logger_config import logger
-from preprocess import _normalize_fb15k237_relation
 
 
 @dataclass
@@ -193,6 +192,8 @@ class ConceptDict:
     def deduce_head_dom(self, head_id: str, rel: str) -> int:
         head_idx = self.ent2idx[head_id]
         rel_idx = self.rel2idx[rel]
+        if head_idx not in self.ent2dom:
+            return -1
         head_dom = self.ent2dom[head_idx]
         rel_dom = self.rel2dom_h[rel_idx]
         return next(iter(head_dom.intersection(rel_dom)))
@@ -201,6 +202,8 @@ class ConceptDict:
     def duduce_tail_dom(self, tail_id: str, rel: str) -> int:
         tail_idx = self.ent2idx[tail_id]
         rel_idx = self.rel2idx[rel]
+        if tail_idx not in self.ent2dom:
+            return -1
         tail_dom = self.ent2dom[tail_idx]
         rel_dom = self.rel2dom_t[rel_idx]
         return next(iter(tail_dom.intersection(rel_dom)))
@@ -217,3 +220,16 @@ def reverse_triplet(obj):
         'tail_id': obj['head_id'],
         'tail': obj['head']
     }
+
+
+def _normalize_fb15k237_relation(relation: str) -> str:
+    tokens = relation.replace('./', '/').replace('_', ' ').strip().split('/')
+    dedup_tokens = []
+    for token in tokens:
+        if token not in dedup_tokens[-3:]:
+            dedup_tokens.append(token)
+    # leaf words are more important (maybe)
+    relation_tokens = dedup_tokens[::-1]
+    relation = ' '.join([t for idx, t in enumerate(relation_tokens)
+                         if idx == 0 or relation_tokens[idx] != relation_tokens[idx - 1]])
+    return relation
