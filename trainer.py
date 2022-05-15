@@ -131,7 +131,7 @@ class Trainer:
         losses = AverageMeter('Loss', ':.4')
         top1 = AverageMeter('Acc@1', ':6.2f')
         top3 = AverageMeter('Acc@3', ':6.2f')
-        inv_t = AverageMeter('InvT0', ':6.2f')
+        inv_t = AverageMeter('InvT', ':6.2f')
         t_scale = AverageMeter('TScale', ':6.2f')
 
         progress = ProgressMeter(
