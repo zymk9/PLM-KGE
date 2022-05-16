@@ -131,12 +131,11 @@ class Trainer:
         losses = AverageMeter('Loss', ':.4')
         top1 = AverageMeter('Acc@1', ':6.2f')
         top3 = AverageMeter('Acc@3', ':6.2f')
-        inv_t = AverageMeter('InvT', ':6.2f')
-        t_scale = AverageMeter('TScale', ':6.2f')
+        t_mean = AverageMeter('TMean', ':6.2f')
 
         progress = ProgressMeter(
             len(self.train_loader),
-            [losses, inv_t, t_scale, top1, top3],
+            [losses, t_mean, top1, top3],
             prefix="Epoch: [{}]".format(epoch))
 
         for i, batch_dict in enumerate(self.train_loader):
@@ -166,8 +165,7 @@ class Trainer:
             top1.update(acc1.item(), batch_size)
             top3.update(acc3.item(), batch_size)
 
-            inv_t.update(outputs.inv_t, 1)
-            t_scale.update(outputs.t_scale, 1)
+            t_mean.update(outputs.t_mean, 1)
             losses.update(loss.item(), batch_size)
 
             # compute gradient and do SGD step

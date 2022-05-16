@@ -102,14 +102,14 @@ class Example:
         tail_word = _parse_entity_name(self.tail)
         tail_encoded_inputs = _custom_tokenize(text=_concat_name_desc(tail_word, tail_desc))
 
-        rel_type = None
-        tail_dom = None
+        # rel_type = None
+        # tail_dom = None
 
-        if args.use_concept_data:
-            concept_dict = get_concept_dict()
-            rel_type = concept_dict.get_rel_type(self.relation)
-            rel_type = 0 if rel_type == 0 or rel_type == 2 else 1   # Only cares about whether tail is unique
-            tail_dom = concept_dict.duduce_tail_dom(self.tail_id, self.relation)
+        # if args.use_concept_data:
+        #     concept_dict = get_concept_dict()
+        #     rel_type = concept_dict.get_rel_type(self.relation)
+        #     rel_type = 0 if rel_type == 0 or rel_type == 2 else 1   # Only cares about whether tail is unique
+        #     tail_dom = concept_dict.duduce_tail_dom(self.tail_id, self.relation)
 
         return {'hr_token_ids': hr_encoded_inputs['input_ids'],
                 'hr_token_type_ids': hr_encoded_inputs['token_type_ids'],
@@ -117,8 +117,8 @@ class Example:
                 'tail_token_type_ids': tail_encoded_inputs['token_type_ids'],
                 'head_token_ids': head_encoded_inputs['input_ids'],
                 'head_token_type_ids': head_encoded_inputs['token_type_ids'],
-                'rel_type': rel_type,
-                'tail_dom': tail_dom,
+                # 'rel_type': rel_type,
+                # 'tail_dom': tail_dom,
                 'obj': self}
 
 
@@ -193,8 +193,8 @@ def collate(batch_data: List[dict]) -> dict:
     batch_exs = [ex['obj'] for ex in batch_data]
 
     # Pass in concept data
-    rel_types = torch.LongTensor([ex['rel_type'] for ex in batch_data]) if args.use_concept_data else []
-    tail_doms = torch.LongTensor([ex['tail_dom'] for ex in batch_data]) if args.use_concept_data else []
+    # rel_types = torch.LongTensor([ex['rel_type'] for ex in batch_data]) if args.use_concept_data else []
+    # tail_doms = torch.LongTensor([ex['tail_dom'] for ex in batch_data]) if args.use_concept_data else []
 
     batch_dict = {
         'hr_token_ids': hr_token_ids,
@@ -207,8 +207,8 @@ def collate(batch_data: List[dict]) -> dict:
         'head_mask': head_mask,
         'head_token_type_ids': head_token_type_ids,
         'batch_data': batch_exs,
-        'rel_types': rel_types,
-        'tail_doms': tail_doms,
+        # 'rel_types': rel_types,
+        # 'tail_doms': tail_doms,
         'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
         'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
     }

@@ -31,10 +31,10 @@ parser.add_argument('--dropout', default=0.1, type=float, metavar='N',
                     help='dropout on final linear layer')
 parser.add_argument('--use-amp', action='store_true',
                     help='Use amp if available')
-parser.add_argument('--t', default=0.05, type=float,
+parser.add_argument('--t', default=0.01, type=float,
                     help='temperature parameter')
-parser.add_argument('--t-scale', default=1.05, type=float,
-                    help='temperature scaling')
+# parser.add_argument('--t-scale', default=1.05, type=float,
+#                     help='temperature scaling')
 parser.add_argument('--use-link-graph', action='store_true',
                     help='use neighbors from link graph as context')
 parser.add_argument('--use-concept-data', action='store_true',
