@@ -9,7 +9,7 @@ if [[ $# -ge 1 ]]; then
     shift
 fi
 
-python -u preprocess.py \
+python3 -u preprocess.py \
 --task "${TASK}" \
 --train-path "./data/${TASK}/train.txt" \
 --valid-path "./data/${TASK}/valid.txt" \

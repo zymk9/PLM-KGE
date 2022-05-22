@@ -11,7 +11,7 @@ from triplet_mask import construct_mask, construct_self_negative_mask
 from dict_hub import get_entity_dict, get_link_graph, get_tokenizer
 from logger_config import logger
 import random
-import numpy as np
+from utils import compute_mutual_exclusiveness
 
 entity_dict = get_entity_dict()
 if args.use_link_graph:
@@ -114,171 +114,6 @@ class Example:
 
 class Dataset(torch.utils.data.dataset.Dataset):
 
-    def __init__(self, path, task, commonsense_path, mode="tail", batch_size=64, commonsense_ratio=0.5, examples=None):
-        self.path_list = path.split(',')
-        self.task = task
-        self.commonsense_path = commonsense_path
-        ########### Load commonsense info ###########
-        
-        self.rel_h = json.load(open(os.path.join(commonsense_path,"rel2dom_h.json"), 'r', encoding='utf-8'))       # the head concepts associated with each relation according to commonsense C2
-        self.rel_t = json.load(open(os.path.join(commonsense_path,"rel2dom_t.json"), 'r', encoding='utf-8'))       # the tail concepts associated with each relation according to commonsense C2
-        self.conc_ents = json.load(open(os.path.join(commonsense_path,"dom_ent.json"), 'r', encoding='utf-8'))   # concept to entities
-        self.ent_conc = json.load(open(os.path.join(commonsense_path,"ent_dom.json"), 'r', encoding='utf-8'))    # entity to concept
-        self.rel2nn = json.load(open(os.path.join(commonsense_path,"rel2nn.json"), 'r', encoding='utf-8'))      # the complex relation property
-        self.mode = mode
-        self.batch_size = batch_size
-        self.commonsense_ratio = commonsense_ratio
-        #################################################
-        
-        assert all(os.path.exists(path) for path in self.path_list) or examples
-        if examples:
-            self.examples = examples
-        else:
-            self.examples = []
-            for path in self.path_list:
-                if not self.examples:
-                    self.examples = load_data(path)
-                else:
-                    self.examples.extend(load_data(path))
-
-        ########### add ent-example dict ############
-        self.h_ent_example_dic = {}
-        self.t_ent_example_dic = {}
-        for example in self.examples:
-            if example.head_id in self.h_ent_example_dic.keys():
-                self.h_ent_example_dic[example.head_id] += [example]
-            else:
-                self.h_ent_example_dic[example.head_id] = [example]
-            if example.tail_id in self.t_ent_example_dic.keys():
-                self.t_ent_example_dic[example.tail_id] += [example]
-            else:
-                self.t_ent_example_dic[example.tail_id] = [example]
-        #################################################
-    def __len__(self):
-        return len(self.examples)
-
-    
-
-
-    ########### Modifications ###########
-    def concept_filter_h(self, head_id, tail_id, relation):
-        rel_hc = self.rel_h[str(relation)]
-        set_hc = set(rel_hc)
-        rel_tc = self.rel_t[str(relation)]
-        set_tc = set(rel_tc)
-        relnn = self.rel2nn[relation]
-        h = [] 
-        if relnn == 1 or relnn == 0: 
-            if str(head_id) not in self.ent_conc:
-                for hc in rel_hc:
-                    for ent in self.conc_ents[str(hc)]:
-                        h.append(ent)
-            else:
-                for conc in self.ent_conc[str(head_id)]:
-                    for ent in self.conc_ents[str(conc)]:
-                        h.append(ent)
-        else:
-            if str(head_id) in self.ent_conc:
-                set_ent_conc = set(self.ent_conc[str(head_id)])      
-            else:
-                set_ent_conc = set([])
-            set_diff = set_hc - set_ent_conc
-            set_diff = list(set_diff)
-            for conc in set_diff:
-                for ent in self.conc_ents[str(conc)]:
-                    h.append(ent)
-        corrupted_h_list = list(set(h))
-        return corrupted_h_list
-        ########### What if not enough ? ###########
-
-
-    def concept_filter_t(self, head_id, tail_id, relation):
-        rel_hc = self.rel_h[str(relation)]
-        set_hc = set(rel_hc)
-        rel_tc = self.rel_t[str(relation)]
-        set_tc = set(rel_tc)
-        relnn = self.rel2nn[relation]
-        t = [] 
-        if relnn == 2 or relnn == 3: #[1-N], find the entities with the same concepts with the head
-            if str(tail_id) not in self.ent_conc:
-                for tc in rel_tc:
-                    for ent in self.conc_ents[str(tc)]:
-                        t.append(ent)
-            else:
-                for conc in self.ent_conc[str(tail_id)]:
-                    for ent in self.conc_ents[str(conc)]:
-                        t.append(ent)
-        else:
-            if str(tail_id) in self.ent_conc:
-                set_ent_conc = set(self.ent_conc[str(tail_id)])      
-            else:
-                set_ent_conc = set([])
-            set_diff = set_tc - set_ent_conc
-            set_diff = list(set_diff)
-            for conc in set_diff:
-                for ent in self.conc_ents[str(conc)]:
-                    t.append(ent)
-        corrupted_t_list = list(set(t))
-        return corrupted_t_list
-        ########### What if not enough ? ###########
-
-
-    def sample_commonsense_negatives(self, example):
-        # tail predictions inverted to the format below
-        # 'inverse {}'.format(obj['relation']),
-        # detect whether it is a flipped relation
-
-        if str(example.relation) not in self.rel_h and str(example.relation[8:]) not in self.rel_h:
-            return []
-        if str(example.relation) not in self.rel_t and str(example.relation[8:]) not in self.rel_h:
-            return []
-        #relation complexity:  
-        # complex_id:  
-        # 0: 1-1 relation, 
-        # 1: 1-N relation, 
-        # 2: N-1 relation, 
-        # 3: N-N relation.
-
-        if example.relation[:8] == "inverse ": 
-            head_id = example.tail_id
-            tail_id = example.head_id
-            relation = example.relation[8:] 
-            if self.mode == "head":
-                sampled_ents = self.concept_filter_t(head_id, tail_id, relation)
-            else:
-                sampled_ents = self.concept_filter_h(head_id, tail_id, relation)
-
-        else: 
-            head_id = example.head_id
-            tail_id = example.tail_id
-            relation = example.relation
-            if self.mode == "head":
-                sampled_ents = self.concept_filter_h(head_id, tail_id, relation)
-            else:
-                sampled_ents = self.concept_filter_t(head_id, tail_id, relation)
-        
-        if self.mode == "head":
-            sampled_ex = [ex for ent in sampled_ents if ent in self.h_ent_example_dic for ex in self.h_ent_example_dic[ent]]
-        else:
-            sampled_ex = [ex for ent in sampled_ents if ent in self.t_ent_example_dic for ex in self.t_ent_example_dic[ent]]
-        
-        commonsense_samples_cnt = min(int(self.commonsense_ratio * self.batch_size), len(sampled_ex))
-        naive_samples_cnt = self.batch_size - commonsense_samples_cnt - 1 # the word itself
-
-        return random.sample(sampled_ex, commonsense_samples_cnt) + random.sample(self.examples, naive_samples_cnt) + [example]
-
-    ########### Modifications ###########
-    ########### Modifications ###########
-    def __getitem__(self, index):
-        # print(self.examples[index].head_id)
-        # print(self.examples[index].relation)
-        # print(self.examples[index].tail_id)
-        samples = self.sample_commonsense_negatives(self.examples[index])
-        return np.array([sample.vectorize() for sample in samples])
-    ########### Modifications ###########
-    
-class OriginalDataset(torch.utils.data.dataset.Dataset):
-
     def __init__(self, path, task, examples=None):
         self.path_list = path.split(',')
         self.task = task
@@ -298,6 +133,139 @@ class OriginalDataset(torch.utils.data.dataset.Dataset):
 
     def __getitem__(self, index):
         return self.examples[index].vectorize()
+
+######################## Generated by sampled relation #######################
+class RelGenDataset(torch.utils.data.dataset.Dataset):
+
+    def __init__(self, path, task, commonsense_path, batch_size, examples=None):
+        self.path_list = path.split(',')
+        self.task = task
+        assert all(os.path.exists(path) for path in self.path_list) or examples
+        
+        self.commonsense_path = commonsense_path
+        self.ent_dom = json.load(open(os.path.join(commonsense_path,"ent_dom.json"), 'r', encoding='utf-8'))
+        self.dom_ent = json.load(open(os.path.join(commonsense_path,"dom_ent.json"), 'r', encoding='utf-8'))
+        self.rel2dom_h = json.load(open(os.path.join(commonsense_path,"rel2dom_h.json"), 'r', encoding='utf-8'))
+        self.rel2dom_t = json.load(open(os.path.join(commonsense_path,"rel2dom_t.json"), 'r', encoding='utf-8'))
+        self.rel2nn = json.load(open(os.path.join(commonsense_path,"rel2nn.json"), 'r', encoding='utf-8'))
+        self.batch_size = batch_size
+
+        if examples:
+            self.examples = examples
+        else:
+            self.examples = []
+            for path in self.path_list:
+                if not self.examples:
+                    self.examples = load_data(path)
+                else:
+                    self.examples.extend(load_data(path))
+        ####################### add mappings ######################
+        self.rels = []
+        self.rel2ent_h = {}
+        self.rel2ent_t = {}
+        self.rel_ex_cnt = {} ###### later used to adjust the sampling
+        for example in self.examples:
+            self.rels.append(example.relation)
+            if example.relation in self.rel2ent_h:
+                self.rel2ent_h[example.relation][example.head_id] = [example]
+            else:
+                self.rel2ent_h[example.relation] = {}
+                self.rel2ent_h[example.relation][example.head_id] = [example]
+            if example.relation in self.rel2ent_t:
+                self.rel2ent_t[example.relation][example.tail_id] = [example]
+            else:
+                self.rel2ent_t[example.relation] = {}
+                self.rel2ent_t[example.relation][example.tail_id] = [example]
+            if example.relation in self.rel_ex_cnt:
+                self.rel_ex_cnt[example.relation] += 1
+            else:
+                self.rel_ex_cnt[example.relation] = 1
+
+        self.rels = list(set(self.rels))
+        ##############################################################
+
+    def __len__(self):
+        return len(self.examples)//args.batch_size
+
+    def __getitem__(self, index):
+        sampled_exs = []
+        while len(sampled_exs) < args.batch_size:
+          sampled_relation = random.choices(
+              list(self.rel_ex_cnt.keys()),
+              list(self.rel_ex_cnt.values()),
+              k=1
+          )[0]
+          sampled_exs += self.concept_filter(sampled_relation, self.batch_size//8)
+          sampled_exs = list(set(sampled_exs))
+        return [ex.vectorize() for ex in sampled_exs[:args.batch_size]] 
+        
+
+        
+    def concept_filter(self, relation, example_size): # only filter and sample tail
+        # Relation_complexity given in CAKE
+        # 0 : 1-1
+        # 1 : 1-N
+        # 2 : N-1
+        # 3 : N-N
+
+        reverse_dict = {
+          0 : 0,
+          1 : 2,
+          2 : 1,
+          3 : 3
+        }
+        if relation[:8] == "inverse ":
+            rel2nn = reverse_dict[self.rel2nn[relation[8:]]]
+            relation_concepts = self.rel2dom_h[relation[8:]]
+            relation_ents = self.rel2ent_h[relation[8:]]
+        else:
+            rel2nn = self.rel2nn[relation]
+            relation_concepts = self.rel2dom_t[relation]
+            relation_ents = self.rel2ent_t[relation]
+
+        if rel2nn == 0 or rel2nn == 2:
+            # the tail is unique, find the entities in the same concepts. 
+            # for each concept, find enough entties. 
+            # if not enough, move to the next concept
+            corrupted_example = []
+            selected_ents = []
+            while len(corrupted_example) <= example_size:
+                if len(relation_concepts) == 1:
+                    print(len(relation_concepts))
+                selected_concept = random.choice(relation_concepts)
+                for ent in self.dom_ent[str(selected_concept)]:
+                    if ent in relation_ents:
+                        corrupted_example += relation_ents[ent]
+                        selected_ents.append(self.ent_dom[ent])
+                
+            # print("1: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
+            # return "1", compute_mutual_exclusiveness(selected_ents, "jaccard")
+            return corrupted_example[:example_size]
+        else:
+            # the tail is not unique, try finding the entities in different concepts:
+            # for each concept, find one ent. 
+            # if not enough, iterate again though all concept.
+            corrupted_example = []
+            selected_ents = []
+            while len(corrupted_example) <= example_size:
+                # for each concept
+                if len(relation_concepts) == 1:
+                    print(len(relation_concepts))
+                for concept in relation_concepts:
+                    # find one
+                    while True:
+                        ent_chosen = random.choice(self.dom_ent[str(concept)])
+                        if ent_chosen in relation_ents:
+                            corrupted_example += relation_ents[ent_chosen]
+                            selected_ents.append(self.ent_dom[ent_chosen])
+                            break
+                
+            # print("N: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
+            # return "N", compute_mutual_exclusiveness(selected_ents, "jaccard")
+            return corrupted_example[:example_size]
+
+
+###################################################################################
 
 def load_data(path: str,
               add_forward_triplet: bool = True,
@@ -321,49 +289,48 @@ def load_data(path: str,
 
     return examples
 
-def original_collate(batch_data: List[dict]) -> dict:
-    hr_token_ids, hr_mask = to_indices_and_mask(
-        [torch.LongTensor(ex['hr_token_ids']) for ex in batch_data],
-        pad_token_id=get_tokenizer().pad_token_id)
-    hr_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex['hr_token_type_ids']) for ex in batch_data],
-        need_mask=False)
-
-    tail_token_ids, tail_mask = to_indices_and_mask(
-        [torch.LongTensor(ex['tail_token_ids']) for ex in batch_data],
-        pad_token_id=get_tokenizer().pad_token_id)
-    tail_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex['tail_token_type_ids']) for ex in batch_data],
-        need_mask=False)
-
-    head_token_ids, head_mask = to_indices_and_mask(
-        [torch.LongTensor(ex['head_token_ids']) for ex in batch_data],
-        pad_token_id=get_tokenizer().pad_token_id)
-    head_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex['head_token_type_ids']) for ex in batch_data],
-        need_mask=False)
-
-    batch_exs = [ex['obj'] for ex in batch_data]
-    batch_dict = {
-        'hr_token_ids': hr_token_ids,
-        'hr_mask': hr_mask,
-        'hr_token_type_ids': hr_token_type_ids,
-        'tail_token_ids': tail_token_ids,
-        'tail_mask': tail_mask,
-        'tail_token_type_ids': tail_token_type_ids,
-        'head_token_ids': head_token_ids,
-        'head_mask': head_mask,
-        'head_token_type_ids': head_token_type_ids,
-        'batch_data': batch_exs,
-        'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
-        'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
-    }
-    return batch_dict
 
 def collate(batch_data: List[dict]) -> dict:
-    batch_data = batch_data[0]
-    # print(batch_data)
+    hr_token_ids, hr_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['hr_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    hr_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['hr_token_type_ids']) for ex in batch_data],
+        need_mask=False)
 
+    tail_token_ids, tail_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['tail_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    tail_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['tail_token_type_ids']) for ex in batch_data],
+        need_mask=False)
+
+    head_token_ids, head_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['head_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    head_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['head_token_type_ids']) for ex in batch_data],
+        need_mask=False)
+
+    batch_exs = [ex['obj'] for ex in batch_data]
+    batch_dict = {
+        'hr_token_ids': hr_token_ids,
+        'hr_mask': hr_mask,
+        'hr_token_type_ids': hr_token_type_ids,
+        'tail_token_ids': tail_token_ids,
+        'tail_mask': tail_mask,
+        'tail_token_type_ids': tail_token_type_ids,
+        'head_token_ids': head_token_ids,
+        'head_mask': head_mask,
+        'head_token_type_ids': head_token_type_ids,
+        'batch_data': batch_exs,
+        'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
+        'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
+    }
+    return batch_dict
+
+def rel_gen_collate(batch_data: List[dict]) -> dict:
+    batch_data = batch_data[0]
     hr_token_ids, hr_mask = to_indices_and_mask(
         [torch.LongTensor(ex['hr_token_ids']) for ex in batch_data],
         pad_token_id=get_tokenizer().pad_token_id)
@@ -402,7 +369,6 @@ def collate(batch_data: List[dict]) -> dict:
     }
 
     return batch_dict
-
 
 def to_indices_and_mask(batch_tensor, pad_token_id=0, need_mask=True):
     mx_len = max([t.size(0) for t in batch_tensor])

@@ -102,3 +102,32 @@ class ProgressMeter(object):
         num_digits = len(str(num_batches // 1))
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
+
+######################## overlap coefficient ########################
+def overlap_coeff(set_1, set_2):
+    return len(set_1.intersection(set_2))/min(len(set_1), len(set_2))
+
+def dice_coeff(set_1, set_2):
+    return len(set_1.intersection(set_2))*2/(len(set_1)+len(set_2))
+
+def jaccard_coeff(set_1, set_2):
+    return len(set_1.intersection(set_2))/len(set_1.union(set_2))
+
+
+def compute_mutual_exclusiveness(ent_list, func_name):
+    funcs = {
+      "overlap":  overlap_coeff, 
+      "dice":   dice_coeff,
+      "jaccard":  jaccard_coeff
+    }
+    scores = []
+    for i in range(len(ent_list)-1):
+        for j in range(i+1,len(ent_list)):
+            set_1 = set(ent_list[i])
+            set_2 = set(ent_list[j])
+            scores.append(
+              funcs[func_name](set_1, set_2)
+            )
+    if len(scores) == 0:
+        return 1
+    return sum(scores)/len(scores)

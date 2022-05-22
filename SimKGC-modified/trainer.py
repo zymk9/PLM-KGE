@@ -10,7 +10,7 @@ from typing import Dict
 from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from transformers import AdamW
 
-from doc import Dataset, OriginalDataset, collate, original_collate
+from doc import Dataset, collate, RelGenDataset, rel_gen_collate
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
 from metric import accuracy
@@ -40,9 +40,8 @@ class Trainer:
                                weight_decay=args.weight_decay)
         report_num_trainable_parameters(self.model)
 
-        train_dataset = Dataset(path=args.train_path, task=args.task, batch_size = args.batch_size, commonsense_path=args.commonsense)
-        valid_dataset = OriginalDataset(path=args.valid_path, task=args.task) if args.valid_path else None
-        
+        train_dataset = RelGenDataset(path=args.train_path, task=args.task, batch_size = args.batch_size, commonsense_path = args.commonsense_path)
+        valid_dataset = Dataset(path=args.valid_path, task=args.task) if args.valid_path else None
         num_training_steps = args.epochs * len(train_dataset) // max(args.batch_size, 1)
         args.warmup = min(args.warmup, num_training_steps // 10)
         logger.info('Total training steps: {}, warmup steps: {}'.format(num_training_steps, args.warmup))
@@ -53,19 +52,20 @@ class Trainer:
             train_dataset,
             batch_size=1,
             shuffle=True,
-            collate_fn=collate,
-            num_workers=1,
+            collate_fn=rel_gen_collate,
+            num_workers=args.workers,
             pin_memory=True,
             drop_last=True)
 
-        self.valid_loader = torch.utils.data.DataLoader(
+        self.valid_loader = None
+        if valid_dataset:
+            self.valid_loader = torch.utils.data.DataLoader(
                 valid_dataset,
-                batch_size=args.batch_size*2,
+                batch_size=args.batch_size * 2,
                 shuffle=True,
-                collate_fn=original_collate,
+                collate_fn=collate,
                 num_workers=args.workers,
                 pin_memory=True)
-
 
     def train_loop(self):
         if self.args.use_amp:
@@ -73,8 +73,8 @@ class Trainer:
 
         for epoch in range(self.args.epochs):
             # train for one epoch
-            self._run_eval(epoch=epoch)
             self.train_epoch(epoch)
+            self._run_eval(epoch=epoch)
 
     @torch.no_grad()
     def _run_eval(self, epoch, step=0):
@@ -105,6 +105,7 @@ class Trainer:
 
         for i, batch_dict in enumerate(self.valid_loader):
             self.model.eval()
+
             if torch.cuda.is_available():
                 batch_dict = move_to_cuda(batch_dict)
             batch_size = len(batch_dict['batch_data'])

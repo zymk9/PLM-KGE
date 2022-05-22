@@ -15,8 +15,8 @@ parser.add_argument('--train-path', default='', type=str, metavar='N',
                     help='path to training data')
 parser.add_argument('--valid-path', default='', type=str, metavar='N',
                     help='path to valid data')
-parser.add_argument('--commonsense', default='', type=str, metavar='N',
-                    help='path to commonsense data')
+parser.add_argument('--commonsense-path', default='', type=str, metavar='N', help='path to commonsense information')
+
 parser.add_argument('--model-dir', default='', type=str, metavar='N',
                     help='path to model dir')
 parser.add_argument('--warmup', default=400, type=int, metavar='N',
