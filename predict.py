@@ -78,6 +78,26 @@ class BertPredictor:
         return torch.cat(hr_tensor_list, dim=0), torch.cat(tail_tensor_list, dim=0)
 
     @torch.no_grad()
+    def predict_t_by_examples(self, examples: List[Example]):
+        data_loader = torch.utils.data.DataLoader(
+            Dataset(path='', examples=examples, task=args.task),
+            num_workers=1,
+            batch_size=max(args.batch_size, 512),
+            collate_fn=collate,
+            shuffle=False)
+
+        hr_tensor_list, tail_tensor_list, t_tensor_list = [], [], []
+        for idx, batch_dict in enumerate(data_loader):
+            if self.use_cuda:
+                batch_dict = move_to_cuda(batch_dict)
+            outputs = self.model(**batch_dict)
+            hr_tensor_list.append(outputs['hr_vector'])
+            t_tensor_list.append(outputs['t'])
+            tail_tensor_list.append(outputs['tail_vector'])
+
+        return torch.cat(hr_tensor_list, dim=0), torch.cat(tail_tensor_list, dim=0), torch.cat(t_tensor_list, dim=0)
+
+    @torch.no_grad()
     def predict_by_entities(self, entity_exs) -> torch.tensor:
         examples = []
         for entity_ex in entity_exs:

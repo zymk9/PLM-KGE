@@ -150,6 +150,15 @@ class CustomBertModel(nn.Module, ABC):
                                    token_type_ids=tail_token_type_ids)
         return {'ent_vectors': ent_vectors.detach()}
 
+    @torch.no_grad()
+    def predict_hr_embedding(self, head_token_ids, head_mask, head_token_type_ids, **kwargs) -> dict:
+        hr_vectors, t = self._encode(self.head_bert,
+                                   token_ids=head_token_ids,
+                                   mask=head_mask,
+                                   token_type_ids=head_token_type_ids)
+        return {'hr_vectors': hr_vectors.detach(),
+                't': t.detach()}
+
 
 def _pool_output(pooling: str,
                  cls_output: torch.tensor,
