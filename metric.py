@@ -18,3 +18,15 @@ def accuracy(output: torch.tensor, target: torch.tensor, topk=(1,)) -> List[torc
             correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+
+def relation_acc(output: torch.tensor, target: torch.tensor) -> List[torch.tensor]:
+    '''
+    Computes the accuracy for relation type predictions
+    '''
+    with torch.no_grad():
+        batch_size = target.size(0)
+        pred = output.argmax(dim=1)
+        correct = pred.eq(target)
+        correct = correct.float().sum()
+        return correct.mul_(100.0 / batch_size)

@@ -4,6 +4,8 @@ import json
 from typing import List
 from dataclasses import dataclass
 from collections import deque
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
 
 from logger_config import logger
 
@@ -210,6 +212,10 @@ class ConceptDict:
 
     def get_ent_idx(self, ent_id: str) -> int:
         return self.ent2idx[ent_id]
+
+    def get_class_weights(self):
+        return compute_class_weight('balanced', classes=np.array([0, 1, 2, 3]), 
+            y=np.array([v for k, v in self.rel2nn.items()]))
 
 
 def reverse_triplet(obj):

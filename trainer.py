@@ -13,7 +13,7 @@ from transformers import AdamW
 from doc import Dataset, collate
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
-from metric import accuracy
+from metric import accuracy, relation_acc
 from models import build_model, ModelOutput
 from dict_hub import build_tokenizer
 from logger_config import logger
@@ -34,6 +34,9 @@ class Trainer:
 
         # define loss function (criterion) and optimizer
         self.criterion = nn.CrossEntropyLoss().cuda()
+
+        if self.args.use_multitask:
+            self.criterion_relation = nn.CrossEntropyLoss().cuda()
 
         self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad],
                                lr=args.lr,
@@ -103,6 +106,10 @@ class Trainer:
         top1 = AverageMeter('Acc@1', ':6.2f')
         top3 = AverageMeter('Acc@3', ':6.2f')
 
+        if self.args.use_multitask:
+            rel_losses = AverageMeter('Relation Loss', ':.4')
+            rel_acc = AverageMeter('Relation Acc', ':6.2f')
+
         for i, batch_dict in enumerate(self.valid_loader):
             self.model.eval()
 
@@ -115,15 +122,31 @@ class Trainer:
             outputs = ModelOutput(**outputs)
             logits, labels = outputs.logits, outputs.labels
             loss = self.criterion(logits, labels)
-            losses.update(loss.item(), batch_size)
 
+            if self.args.use_multitask:
+                rel_loss = self.criterion_relation(outputs.type_logits, outputs.type_labels) * self.args.multitask_weight
+                rel_losses.update(rel_loss.item(), batch_size)
+                acc = relation_acc(outputs.type_logits, outputs.type_labels)
+                rel_acc.update(acc.item(), batch_size)
+                loss += rel_loss
+
+            losses.update(loss.item(), batch_size)
             acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
             top1.update(acc1.item(), batch_size)
             top3.update(acc3.item(), batch_size)
 
-        metric_dict = {'Acc@1': round(top1.avg, 3),
-                       'Acc@3': round(top3.avg, 3),
-                       'loss': round(losses.avg, 3)}
+        if self.args.use_multitask:
+            metric_dict = {
+                'Acc@1': round(top1.avg, 3),
+                'Acc@3': round(top3.avg, 3),
+                'loss': round(losses.avg, 3),
+                'Rel loss': round(rel_losses.avg, 3),
+                'Rel Acc': round(rel_acc.avg, 3),
+            }
+        else:
+            metric_dict = {'Acc@1': round(top1.avg, 3),
+                           'Acc@3': round(top3.avg, 3),
+                           'loss': round(losses.avg, 3)}
         logger.info('Epoch {}, valid metric: {}'.format(epoch, json.dumps(metric_dict)))
         return metric_dict
 
@@ -131,12 +154,20 @@ class Trainer:
         losses = AverageMeter('Loss', ':.4')
         top1 = AverageMeter('Acc@1', ':6.2f')
         top3 = AverageMeter('Acc@3', ':6.2f')
-        t_mean = AverageMeter('TMean', ':6.2f')
+        t_mean = AverageMeter('MeanT', ':6.2f')
 
-        progress = ProgressMeter(
-            len(self.train_loader),
-            [losses, t_mean, top1, top3],
-            prefix="Epoch: [{}]".format(epoch))
+        if self.args.use_multitask:
+            rel_losses = AverageMeter('Relation Loss', ':.4')
+            rel_acc = AverageMeter('Relation Acc', ':6.2f')
+            progress = ProgressMeter(
+                len(self.train_loader),
+                [losses, rel_losses, t_mean, top1, top3, rel_acc],
+                prefix="Epoch: [{}]".format(epoch))
+        else:
+            progress = ProgressMeter(
+                len(self.train_loader),
+                [losses, t_mean, top1, top3],
+                prefix="Epoch: [{}]".format(epoch))
 
         for i, batch_dict in enumerate(self.train_loader):
             # switch to train mode
@@ -160,6 +191,13 @@ class Trainer:
             loss = self.criterion(logits, labels)
             # tail -> head + relation
             loss += self.criterion(logits[:, :batch_size].t(), labels)
+
+            if self.args.use_multitask:
+                relation_loss = self.criterion_relation(outputs.type_logits, outputs.type_labels) * self.args.multitask_weight
+                loss += relation_loss 
+                rel_losses.update(relation_loss.item(), batch_size)
+                acc = relation_acc(outputs.type_logits, outputs.type_labels)
+                rel_acc.update(acc.item(), batch_size)
 
             acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
             top1.update(acc1.item(), batch_size)

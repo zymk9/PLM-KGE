@@ -18,9 +18,26 @@ def build_model(args) -> nn.Module:
 class ModelOutput:
     logits: torch.tensor
     labels: torch.tensor
+    type_logits: torch.tensor
+    type_labels: torch.tensor
     t_mean: torch.tensor
     hr_vector: torch.tensor
     tail_vector: torch.tensor
+
+
+class CustomProjector(nn.Module):
+    def __init__(self, hidden_size, embedding_size):
+        super().__init__()
+        self.fc = nn.Linear(hidden_size, hidden_size)
+        self.batch_norm = nn.BatchNorm1d(hidden_size)
+        self.proj = nn.Linear(hidden_size, embedding_size)
+
+    def forward(self, x):
+        x = self.fc(x)
+        x = self.batch_norm(x)
+        x = torch.relu(x)
+        x = self.proj(x)
+        return x
 
 
 class CustomBertModel(nn.Module, ABC):
@@ -46,7 +63,8 @@ class CustomBertModel(nn.Module, ABC):
         self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
         self.tail_bert = deepcopy(self.hr_bert)
 
-        self.t_proj = nn.Linear(self.config.hidden_size, 1)
+        self.t_proj = CustomProjector(self.config.hidden_size, 1)
+        self.type_proj = CustomProjector(self.config.hidden_size, 4)    # 4 types of relations
 
     def _encode(self, encoder, token_ids, mask, token_type_ids):
         outputs = encoder(input_ids=token_ids,
@@ -57,8 +75,12 @@ class CustomBertModel(nn.Module, ABC):
         last_hidden_state = outputs.last_hidden_state
         cls_output = last_hidden_state[:, 0, :]
         t = torch.maximum(torch.sigmoid(self.t_proj(cls_output.squeeze())), self.t_lowerbound)
+
+        type_output = None if not self.args.use_multitask else self.type_proj(cls_output)
+
         cls_output = _pool_output(self.args.pooling, cls_output, mask, last_hidden_state)
-        return cls_output, t
+
+        return cls_output, t, type_output
 
     def forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
                 tail_token_ids, tail_mask, tail_token_type_ids,
@@ -69,17 +91,17 @@ class CustomBertModel(nn.Module, ABC):
                                               tail_mask=tail_mask,
                                               tail_token_type_ids=tail_token_type_ids)
 
-        hr_vector, t = self._encode(self.hr_bert,
+        hr_vector, t, types = self._encode(self.hr_bert,
                                  token_ids=hr_token_ids,
                                  mask=hr_mask,
                                  token_type_ids=hr_token_type_ids)
 
-        tail_vector, _ = self._encode(self.tail_bert,
+        tail_vector, _, _ = self._encode(self.tail_bert,
                                    token_ids=tail_token_ids,
                                    mask=tail_mask,
                                    token_type_ids=tail_token_type_ids)
 
-        head_vector, _ = self._encode(self.tail_bert,
+        head_vector, _, _ = self._encode(self.tail_bert,
                                    token_ids=head_token_ids,
                                    mask=head_mask,
                                    token_type_ids=head_token_type_ids)
@@ -88,6 +110,7 @@ class CustomBertModel(nn.Module, ABC):
         return {'hr_vector': hr_vector,
                 'tail_vector': tail_vector,
                 'head_vector': head_vector,
+                'types': types,
                 't': t}
 
     def compute_logits(self, output_dict: dict, batch_dict: dict) -> dict:
@@ -118,6 +141,8 @@ class CustomBertModel(nn.Module, ABC):
 
         return {'logits': logits,
                 'labels': labels,
+                'type_logits': output_dict['types'],
+                'type_labels': batch_dict['rel_types'],
                 't_mean': output_dict['t'].mean().detach(),
                 'hr_vector': hr_vector.detach(),
                 'tail_vector': tail_vector.detach()}
@@ -144,7 +169,7 @@ class CustomBertModel(nn.Module, ABC):
 
     @torch.no_grad()
     def predict_ent_embedding(self, tail_token_ids, tail_mask, tail_token_type_ids, **kwargs) -> dict:
-        ent_vectors, _ = self._encode(self.tail_bert,
+        ent_vectors, _, _ = self._encode(self.tail_bert,
                                    token_ids=tail_token_ids,
                                    mask=tail_mask,
                                    token_type_ids=tail_token_type_ids)
@@ -152,7 +177,7 @@ class CustomBertModel(nn.Module, ABC):
 
     @torch.no_grad()
     def predict_hr_embedding(self, head_token_ids, head_mask, head_token_type_ids, **kwargs) -> dict:
-        hr_vectors, t = self._encode(self.head_bert,
+        hr_vectors, t, _ = self._encode(self.head_bert,
                                    token_ids=head_token_ids,
                                    mask=head_mask,
                                    token_type_ids=head_token_type_ids)
