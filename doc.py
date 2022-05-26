@@ -134,9 +134,9 @@ class Dataset(torch.utils.data.dataset.Dataset):
             self.examples = []
             for path in self.path_list:
                 if not self.examples:
-                    self.examples = load_data(path)
+                    self.examples = load_data(path, not args.inverse_only)
                 else:
-                    self.examples.extend(load_data(path))
+                    self.examples.extend(load_data(path, not args.inverse_only))
 
     def __len__(self):
         return len(self.examples)

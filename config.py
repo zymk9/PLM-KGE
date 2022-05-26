@@ -80,6 +80,8 @@ parser.add_argument('--use-multitask', action='store_true',
                     help='use multitask learning')
 parser.add_argument('--multitask-weight', default=0.5, type=float,
                     help='weight for multitask loss')
+parser.add_argument('--inverse-only', action='store_true',
+                    help='use only inversed relations')
 
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',
