@@ -2,9 +2,11 @@ import glob
 import json
 import torch
 import shutil
+import os
 
 import torch.nn as nn
 import torch.utils.data
+from torch.nn import DataParallel
 
 from typing import Dict
 from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
@@ -13,7 +15,8 @@ from transformers import AdamW
 from doc import Dataset, collate
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
-from metric import accuracy, relation_acc
+from utils import save_adapter, save_fusion
+from metric import accuracy, relation_acc, concept_metrics
 from models import build_model, ModelOutput
 from dict_hub import build_tokenizer
 from logger_config import logger
@@ -35,8 +38,8 @@ class Trainer:
         # define loss function (criterion) and optimizer
         self.criterion = nn.CrossEntropyLoss().cuda()
 
-        if self.args.use_multitask:
-            self.criterion_relation = nn.CrossEntropyLoss().cuda()
+        if self.args.training_mode == 'concept_pred':
+            self.criterion = nn.BCEWithLogitsLoss().cuda()
 
         self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad],
                                lr=args.lr,
@@ -82,7 +85,12 @@ class Trainer:
     @torch.no_grad()
     def _run_eval(self, epoch, step=0):
         metric_dict = self.eval_epoch(epoch)
-        is_best = self.valid_loader and (self.best_metric is None or metric_dict['Acc@1'] > self.best_metric['Acc@1'])
+        if self.args.training_mode == 'concept_pred':
+            cur_metric = metric_dict['HR f1'] + metric_dict['Tail f1']
+            is_best = self.valid_loader and (self.best_metric is None or 
+                cur_metric > self.best_metric['HR f1'] + self.best_metric['Tail f1'])
+        else:
+            is_best = self.valid_loader and (self.best_metric is None or metric_dict['Acc@1'] > self.best_metric['Acc@1'])
         if is_best:
             self.best_metric = metric_dict
 
@@ -97,18 +105,46 @@ class Trainer:
         delete_old_ckt(path_pattern='{}/checkpoint_*.mdl'.format(self.args.model_dir),
                        keep=self.args.max_to_keep)
 
+        hr_bert = self.model.hr_bert if not isinstance(self.model, DataParallel) else self.model.module.hr_bert
+        tail_bert = self.model.tail_bert if not isinstance(self.model, DataParallel) else self.model.module.tail_bert
+
+        if self.args.training_mode == 'concept_pred':
+            hr_adapter = os.path.join(self.args.model_dir, f'concept_pred_hr_epoch{epoch}')
+            save_adapter(hr_bert, is_best, 'concept_pred_hr', hr_adapter)
+
+            tail_adapter = os.path.join(self.args.model_dir, f'concept_pred_t_epoch{epoch}')
+            save_adapter(tail_bert, is_best, 'concept_pred_t', tail_adapter)
+        elif self.args.training_mode == 'link_pred':
+            hr_adapter = os.path.join(self.args.model_dir, f'link_pred_hr_epoch{epoch}')
+            save_adapter(hr_bert, is_best, 'link_pred_hr', hr_adapter)
+
+            tail_adapter = os.path.join(self.args.model_dir, f'link_pred_t_epoch{epoch}')
+            save_adapter(tail_bert, is_best, 'link_pred_t', tail_adapter)
+        else:
+            hr_fusion = os.path.join(self.args.model_dir, f'fusion_hr_epoch{epoch}')
+            save_fusion(hr_bert, is_best, 'fusion_hr', ['concept_pred_hr', 'link_pred_hr'], hr_fusion)
+
+            tail_fusion = os.path.join(self.args.model_dir, f'fusion_t_epoch{epoch}')
+            save_fusion(tail_bert, is_best, 'fusion_t', ['concept_pred_t', 'link_pred_t'], tail_fusion)
+
+
     @torch.no_grad()
     def eval_epoch(self, epoch) -> Dict:
         if not self.valid_loader:
             return {}
 
-        losses = AverageMeter('Loss', ':.4')
-        top1 = AverageMeter('Acc@1', ':6.2f')
-        top3 = AverageMeter('Acc@3', ':6.2f')
+        if self.args.training_mode != 'concept_pred':
+            losses = AverageMeter('Loss', ':.4')
+            top1 = AverageMeter('Acc@1', ':6.2f')
+            top3 = AverageMeter('Acc@3', ':6.2f')
 
-        if self.args.use_multitask:
-            rel_losses = AverageMeter('Relation Loss', ':.4')
-            rel_acc = AverageMeter('Relation Acc', ':6.2f')
+        else:
+            hr_losses = AverageMeter('HR Loss', ':.4')
+            hr_acc = AverageMeter('HR Acc', ':6.2f')
+            hr_f1 = AverageMeter('HR F1', ':6.2f')
+            tail_losses = AverageMeter('Tail Loss', ':.4')
+            tail_acc = AverageMeter('Tail Acc', ':6.2f')
+            tail_f1 = AverageMeter('Tail F1', ':6.2f')
 
         for i, batch_dict in enumerate(self.valid_loader):
             self.model.eval()
@@ -118,30 +154,42 @@ class Trainer:
             batch_size = len(batch_dict['batch_data'])
 
             outputs = self.model(**batch_dict)
-            outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
-            outputs = ModelOutput(**outputs)
-            logits, labels = outputs.logits, outputs.labels
-            loss = self.criterion(logits, labels)
 
-            if self.args.use_multitask:
-                rel_loss = self.criterion_relation(outputs.type_logits, outputs.type_labels) * self.args.multitask_weight
-                rel_losses.update(rel_loss.item(), batch_size)
-                acc = relation_acc(outputs.type_logits, outputs.type_labels)
-                rel_acc.update(acc.item(), batch_size)
-                loss += rel_loss
+            if self.args.training_mode != 'concept_pred':
+                outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
+                outputs = ModelOutput(**outputs)
+                logits, labels = outputs.logits, outputs.labels
+                loss = self.criterion(logits, labels)
 
-            losses.update(loss.item(), batch_size)
-            acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
-            top1.update(acc1.item(), batch_size)
-            top3.update(acc3.item(), batch_size)
+                losses.update(loss.item(), batch_size)
+                acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
+                top1.update(acc1.item(), batch_size)
+                top3.update(acc3.item(), batch_size)
 
-        if self.args.use_multitask:
+            else:
+                hr_logits, tail_logits = outputs['hr_logits'], outputs['tail_logits']
+                labels = batch_dict['tail_doms'].type(hr_logits.type())
+                hr_loss = self.criterion(hr_logits, labels)
+                tail_loss = self.criterion(tail_logits, labels)
+
+                cur_hr_acc, cur_hr_f1 = concept_metrics(hr_logits, labels)
+                cur_tail_acc, cur_tail_f1 = concept_metrics(tail_logits, labels)
+
+                hr_losses.update(hr_loss.item(), batch_size)
+                hr_acc.update(cur_hr_acc.item(), batch_size)
+                hr_f1.update(cur_hr_f1.item(), batch_size)
+                tail_losses.update(tail_loss.item(), batch_size)
+                tail_acc.update(cur_tail_acc.item(), batch_size)
+                tail_f1.update(cur_tail_f1.item(), batch_size)
+
+        if self.args.training_mode == 'concept_pred':
             metric_dict = {
-                'Acc@1': round(top1.avg, 3),
-                'Acc@3': round(top3.avg, 3),
-                'loss': round(losses.avg, 3),
-                'Rel loss': round(rel_losses.avg, 3),
-                'Rel Acc': round(rel_acc.avg, 3),
+                'HR loss': round(hr_losses.avg, 3),
+                'HR acc': round(hr_acc.avg, 3),
+                'HR f1': round(hr_f1.avg, 3),
+                'Tail loss': round(tail_losses.avg, 3),
+                'Tail acc': round(tail_acc.avg, 3),
+                'Tail f1': round(tail_f1.avg, 3),
             }
         else:
             metric_dict = {'Acc@1': round(top1.avg, 3),
@@ -151,22 +199,27 @@ class Trainer:
         return metric_dict
 
     def train_epoch(self, epoch):
-        losses = AverageMeter('Loss', ':.4')
-        top1 = AverageMeter('Acc@1', ':6.2f')
-        top3 = AverageMeter('Acc@3', ':6.2f')
-        t_mean = AverageMeter('MeanT', ':6.2f')
+        if self.args.training_mode != 'concept_pred':
+            losses = AverageMeter('Loss', ':.4')
+            top1 = AverageMeter('Acc@1', ':6.2f')
+            top3 = AverageMeter('Acc@3', ':6.2f')
+            inv_t = AverageMeter('InvT', ':6.2f')
 
-        if self.args.use_multitask:
-            rel_losses = AverageMeter('Relation Loss', ':.4')
-            rel_acc = AverageMeter('Relation Acc', ':6.2f')
             progress = ProgressMeter(
                 len(self.train_loader),
-                [losses, rel_losses, t_mean, top1, top3, rel_acc],
+                [losses, inv_t, top1, top3],
                 prefix="Epoch: [{}]".format(epoch))
+
         else:
+            hr_losses = AverageMeter('HR Loss', ':.4')
+            hr_acc = AverageMeter('HR Acc', ':6.2f')
+            hr_f1 = AverageMeter('HR F1', ':6.2f')
+            tail_losses = AverageMeter('Tail Loss', ':.4')
+            tail_acc = AverageMeter('Tail Acc', ':6.2f')
+            tail_f1 = AverageMeter('Tail F1', ':6.2f')
             progress = ProgressMeter(
                 len(self.train_loader),
-                [losses, t_mean, top1, top3],
+                [hr_losses, hr_acc, hr_f1, tail_losses, tail_acc, tail_f1],
                 prefix="Epoch: [{}]".format(epoch))
 
         for i, batch_dict in enumerate(self.train_loader):
@@ -183,28 +236,40 @@ class Trainer:
                     outputs = self.model(**batch_dict)
             else:
                 outputs = self.model(**batch_dict)
-            outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
-            outputs = ModelOutput(**outputs)
-            logits, labels = outputs.logits, outputs.labels
-            assert logits.size(0) == batch_size
-            # head + relation -> tail
-            loss = self.criterion(logits, labels)
-            # tail -> head + relation
-            loss += self.criterion(logits[:, :batch_size].t(), labels)
 
-            if self.args.use_multitask:
-                relation_loss = self.criterion_relation(outputs.type_logits, outputs.type_labels) * self.args.multitask_weight
-                loss += relation_loss 
-                rel_losses.update(relation_loss.item(), batch_size)
-                acc = relation_acc(outputs.type_logits, outputs.type_labels)
-                rel_acc.update(acc.item(), batch_size)
+            if self.args.training_mode != 'concept_pred':
+                outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
+                outputs = ModelOutput(**outputs)
+                logits, labels = outputs.logits, outputs.labels
+                assert logits.size(0) == batch_size
+                # head + relation -> tail
+                loss = self.criterion(logits, labels)
+                # tail -> head + relation
+                loss += self.criterion(logits[:, :batch_size].t(), labels)
 
-            acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
-            top1.update(acc1.item(), batch_size)
-            top3.update(acc3.item(), batch_size)
+                acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
+                top1.update(acc1.item(), batch_size)
+                top3.update(acc3.item(), batch_size)
 
-            t_mean.update(outputs.t_mean, 1)
-            losses.update(loss.item(), batch_size)
+                inv_t.update(outputs.inv_t, 1)
+                losses.update(loss.item(), batch_size)
+
+            else:
+                hr_logits, tail_logits = outputs['hr_logits'], outputs['tail_logits']
+                labels = batch_dict['tail_doms'].type(hr_logits.type())
+                hr_loss = self.criterion(hr_logits, labels)
+                tail_loss = self.criterion(tail_logits, labels)
+                loss = hr_loss + tail_loss
+                
+                cur_hr_acc, cur_hr_f1 = concept_metrics(hr_logits, labels)
+                cur_tail_acc, cur_tail_f1 = concept_metrics(tail_logits, labels)
+
+                hr_losses.update(hr_loss.item(), batch_size)
+                hr_acc.update(cur_hr_acc.item(), batch_size)
+                hr_f1.update(cur_hr_f1.item(), batch_size)
+                tail_losses.update(tail_loss.item(), batch_size)
+                tail_acc.update(cur_tail_acc.item(), batch_size)
+                tail_f1.update(cur_tail_f1.item(), batch_size)
 
             # compute gradient and do SGD step
             self.optimizer.zero_grad()

@@ -1,6 +1,7 @@
 import torch
 
 from typing import List
+from sklearn.metrics import f1_score, accuracy_score
 
 
 def accuracy(output: torch.tensor, target: torch.tensor, topk=(1,)) -> List[torch.tensor]:
@@ -30,3 +31,17 @@ def relation_acc(output: torch.tensor, target: torch.tensor) -> List[torch.tenso
         correct = pred.eq(target)
         correct = correct.float().sum()
         return correct.mul_(100.0 / batch_size)
+
+
+def concept_metrics(output: torch.tensor, target: torch.tensor):
+    '''
+    Computes the accuracy and f1 score for concept type predictions
+    '''
+    with torch.no_grad():
+        batch_size = target.size(0)
+        pred = torch.where(output > 0, 1.0, 0.0)
+        correct = pred.eq(target)
+        correct = correct.float().sum()
+        acc = correct.mul_(100.0 / (batch_size * target.size(1)))
+        f1 = f1_score(target.cpu().numpy(), pred.cpu().numpy(), average='samples')
+        return acc, f1

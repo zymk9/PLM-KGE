@@ -1,3 +1,4 @@
+from copy import deepcopy
 import os
 import json
 import tqdm
@@ -48,6 +49,29 @@ class BertPredictor:
             self.model.cuda()
             self.use_cuda = True
         logger.info('Load model from {} successfully'.format(ckt_path))
+
+    def load_adapters(self):
+        self.train_args.__dict__ = deepcopy(args.__dict__)
+        args.is_test = True
+        build_tokenizer(self.train_args)
+        self.model = build_model(self.train_args)
+
+        if args.training_mode == 'concept_pred':
+            self.model.hr_bert.load_adapter(args.concept_pred_hr, with_head=False, set_active=True)
+            self.model.tail_bert.load_adapter(args.concept_pred_t, with_head=False, set_active=True)
+        elif args.training_mode == 'link_pred':
+            self.model.hr_bert.load_adapter(args.link_pred_hr, with_head=False, set_active=True)
+            self.model.tail_bert.load_adapter(args.link_pred_t, with_head=False, set_active=True)
+        else:
+            self.model.hr_bert.load_adapter_fusion(args.fusion_hr, with_head=False, set_active=True)
+            self.model.tail_bert.load_adapter_fusion(args.fusion_t, with_head=False, set_active=True)
+        
+        self.model.eval()
+        if torch.cuda.is_available():
+            self.model.cuda()
+            self.use_cuda = True
+
+        logger.info('Load adapters successfully')
 
     def _setup_args(self):
         for k, v in args.__dict__.items():

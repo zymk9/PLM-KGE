@@ -137,6 +137,7 @@ class ConceptDict:
 
         self._load(concept_dict_dir)
         self._add_inversed_relations()
+        self._build_dom_vector()
 
     def _load(self, dir: str):
         with open(os.path.join(dir, 'rel2dom_h.json')) as f:
@@ -154,6 +155,7 @@ class ConceptDict:
         with open(os.path.join(dir, 'dom_ent.json')) as f:
             self.dom2ent = json.load(f)
             self.dom2ent = {int(k): set(vals) for k, vals in self.dom2ent.items()}
+            self.num_dom = len(self.dom2ent)
 
         with open(os.path.join(dir, 'ent_dom.json')) as f:
             self.ent2dom = json.load(f)
@@ -187,6 +189,15 @@ class ConceptDict:
         
         self.rel2idx.update(inv_rel_dict)
 
+    def _build_dom_vector(self):
+        self.dom_vector = np.zeros((len(self.ent2idx), self.num_dom + 1))
+        for idx in range(len(self.ent2idx)):
+            if idx not in self.ent2dom:
+                self.dom_vector[idx, self.num_dom] = 1
+            else:
+                for dom_idx in self.ent2dom[idx]:
+                    self.dom_vector[idx, dom_idx] = 1
+
     def get_rel_type(self, rel: str) -> int:
         return self.rel2nn[self.rel2idx[rel]]
 
@@ -201,7 +212,7 @@ class ConceptDict:
         return next(iter(head_dom.intersection(rel_dom)))
 
     # Return duduced domain index for tail entity
-    def duduce_tail_dom(self, tail_id: str, rel: str) -> int:
+    def deduce_tail_dom(self, tail_id: str, rel: str) -> int:
         tail_idx = self.ent2idx[tail_id]
         rel_idx = self.rel2idx[rel]
         if tail_idx not in self.ent2dom:
@@ -212,6 +223,9 @@ class ConceptDict:
 
     def get_ent_idx(self, ent_id: str) -> int:
         return self.ent2idx[ent_id]
+
+    def get_ent_dom(self, ent_id: str):
+        return self.dom_vector[self.ent2idx[ent_id]]
 
     def get_class_weights(self):
         return compute_class_weight('balanced', classes=np.array([0, 1, 2, 3]), 

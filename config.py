@@ -29,7 +29,7 @@ parser.add_argument('--dropout', default=0.1, type=float, metavar='N',
                     help='dropout on final linear layer')
 parser.add_argument('--use-amp', action='store_true',
                     help='Use amp if available')
-parser.add_argument('--t', default=0.01, type=float,
+parser.add_argument('--t', default=0.05, type=float,
                     help='temperature parameter')
 parser.add_argument('--use-link-graph', action='store_true',
                     help='use neighbors from link graph as context')
@@ -70,18 +70,32 @@ parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 
 # Commonsense enhancement
-parser.add_argument('--concept-path', default='', type=str, 
+parser.add_argument('--concept-path', default='', type=str, required=True,
                     help='path to concept data')
 # parser.add_argument('--t-scale', default=1.05, type=float,
-#                     help='temperature scaling')              
-parser.add_argument('--use-concept-data', action='store_true',
-                    help='use the concept data to adjust the contrastive loss')      
-parser.add_argument('--use-multitask', action='store_true',
-                    help='use multitask learning')
-parser.add_argument('--multitask-weight', default=0.5, type=float,
-                    help='weight for multitask loss')
+#                     help='temperature scaling')
 parser.add_argument('--inverse-only', action='store_true',
                     help='use only inversed relations')
+
+# Adapters and multitask
+parser.add_argument('--training-mode', default='', required=True, type=str,
+                    help='training mode, can be either "concept_pred", "link_pred", or "adapterfusion"')
+parser.add_argument('--num-concepts', default=90, type=int,
+                    help='number of concepts, plus one for "others"')
+parser.add_argument('--link-pred-hr', default='', type=str,
+                    help='path to link_pred_hr adapter')
+parser.add_argument('--link-pred-t', default='', type=str,
+                    help='path to link_pred_t adapter')
+parser.add_argument('--concept-pred-hr', default='', type=str,
+                    help='path to concept_pred_hr adapter')
+parser.add_argument('--concept-pred-t', default='', type=str,
+                    help='path to concept_pred_t adapter')
+parser.add_argument('--fusion-hr', default='', type=str,
+                    help='path to fusion_hr adapter')
+parser.add_argument('--fusion-t', default='', type=str,
+                    help='path to fusion_t adapter')
+parser.add_argument('--load-adapters', action='store_true',
+                    help='load adapters instead of full model checkpoint')
 
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',
@@ -99,10 +113,11 @@ assert not args.train_path or os.path.exists(args.train_path)
 assert args.pooling in ['cls', 'mean', 'max']
 assert args.task.lower() in ['wn18rr', 'fb15k237', 'wiki5m_ind', 'wiki5m_trans']
 assert args.lr_scheduler in ['linear', 'cosine']
+assert args.training_mode in ['link_pred', 'concept_pred', 'adapterfusion']
 
 if args.model_dir:
     os.makedirs(args.model_dir, exist_ok=True)
-else:
+elif not args.load_adapters:
     assert os.path.exists(args.eval_model_path), 'One of args.model_dir and args.eval_model_path should be valid path'
     args.model_dir = os.path.dirname(args.eval_model_path)
 

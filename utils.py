@@ -20,6 +20,32 @@ def save_checkpoint(state: dict, is_best: bool, filename: str):
     shutil.copyfile(filename, os.path.dirname(filename) + '/model_last.mdl')
 
 
+def save_adapter(model, is_best, adatper_name, path):
+    model.save_adapter(path, adatper_name)
+    dir = os.path.dirname(path)
+    if is_best:
+        os.makedirs(os.path.join(dir, adatper_name + '_best'), exist_ok=True)
+        for file in os.listdir(path):
+            shutil.copyfile(os.path.join(path, file), os.path.join(dir, adatper_name + '_best', file))
+        
+    os.makedirs(os.path.join(dir, adatper_name + '_last'), exist_ok=True)
+    for file in os.listdir(path):
+        shutil.copyfile(os.path.join(path, file), os.path.join(dir, adatper_name + '_last', file))
+
+
+def save_fusion(model, is_best, fusion_name, adapter_names, path):
+    model.save_adapter_fusion(path, adapter_names)
+    dir = os.path.dirname(path)
+    if is_best:
+        os.makedirs(os.path.join(dir, fusion_name + '_best'), exist_ok=True)
+        for file in os.listdir(path):
+            shutil.copyfile(os.path.join(path, file), os.path.join(dir, fusion_name + '_best', file))
+        
+    os.makedirs(os.path.join(dir, fusion_name + '_last'), exist_ok=True)
+    for file in os.listdir(path):
+        shutil.copyfile(os.path.join(path, file), os.path.join(dir, fusion_name + '_last', file))
+
+
 def delete_old_ckt(path_pattern: str, keep=5):
     files = sorted(glob.glob(path_pattern), key=os.path.getmtime, reverse=True)
     for f in files[keep:]:

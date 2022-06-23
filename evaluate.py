@@ -110,7 +110,11 @@ def predict_by_split():
     assert os.path.exists(args.train_path)
 
     predictor = BertPredictor()
-    predictor.load(ckt_path=args.eval_model_path)
+    if not args.load_adapters:
+        predictor.load(ckt_path=args.eval_model_path)
+    else:
+        predictor.load_adapters()
+
     entity_tensor = predictor.predict_by_entities(entity_dict.entity_exs)
 
     forward_metrics = eval_single_direction(predictor,
