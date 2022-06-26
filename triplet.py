@@ -24,6 +24,7 @@ class TripletDict:
         logger.info('Triplets path: {}'.format(self.path_list))
         self.relations = set()
         self.hr2tails = {}
+        self.rt2heads = {}
         self.triplet_cnt = 0
 
         for path in self.path_list:
@@ -39,10 +40,19 @@ class TripletDict:
             if key not in self.hr2tails:
                 self.hr2tails[key] = set()
             self.hr2tails[key].add(ex['tail_id'])
+
+            key_rt = (ex['tail_id'], ex['relation'])
+            if key_rt not in self.rt2heads:
+                self.rt2heads[key_rt] = set()
+            self.rt2heads[key_rt].add(ex['head_id'])
+
         self.triplet_cnt = len(examples)
 
     def get_neighbors(self, h: str, r: str) -> set:
         return self.hr2tails.get((h, r), set())
+
+    def get_neighbors_rt(self, t: str, r: str) -> set:
+        return self.rt2heads.get((t, r), set())
 
 
 class EntityDict:

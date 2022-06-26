@@ -39,6 +39,18 @@ class PredInfo:
     correct: bool
 
 
+@dataclass
+class PredInfoRT:
+    head: str
+    relation: str
+    tail: str
+    pred_head: str
+    pred_score: float
+    topk_score_info: str
+    rank: int
+    correct: bool
+
+
 @torch.no_grad()
 def compute_metrics(hr_tensor: torch.tensor,
                     entities_tensor: torch.tensor,
@@ -69,13 +81,27 @@ def compute_metrics(hr_tensor: torch.tensor,
         for idx in range(batch_score.size(0)):
             mask_indices = []
             cur_ex = examples[start + idx]
-            gold_neighbor_ids = all_triplet_dict.get_neighbors(cur_ex.head_id, cur_ex.relation)
+            if args.direction == 'forward':
+                gold_neighbor_ids = all_triplet_dict.get_neighbors(cur_ex.head_id, cur_ex.relation)
+            else:
+                gold_neighbor_ids = all_triplet_dict.get_neighbors_rt(cur_ex.tail_id, cur_ex.relation)
+            
             if len(gold_neighbor_ids) > 10000:
-                logger.debug('{} - {} has {} neighbors'.format(cur_ex.head_id, cur_ex.relation, len(gold_neighbor_ids)))
-            for e_id in gold_neighbor_ids:
-                if e_id == cur_ex.tail_id:
-                    continue
-                mask_indices.append(entity_dict.entity_to_idx(e_id))
+                if args.direction == 'forward':
+                    logger.debug('{} - {} has {} neighbors'.format(cur_ex.head_id, cur_ex.relation, len(gold_neighbor_ids)))
+                else:
+                    logger.debug('{} - {} has {} neighbors'.format(cur_ex.tail_id, cur_ex.relation, len(gold_neighbor_ids)))
+
+            if args.direction == 'forward':
+                for e_id in gold_neighbor_ids:
+                    if e_id == cur_ex.tail_id:
+                        continue
+                    mask_indices.append(entity_dict.entity_to_idx(e_id))
+            else:
+                for e_id in gold_neighbor_ids:
+                    if e_id == cur_ex.head_id:
+                        continue
+                    mask_indices.append(entity_dict.entity_to_idx(e_id))
             mask_indices = torch.LongTensor(mask_indices).to(batch_score.device)
             batch_score[idx].index_fill_(0, mask_indices, -1)
 
@@ -116,18 +142,18 @@ def predict_by_split():
     forward_metrics = eval_single_direction(predictor,
                                             entity_tensor=entity_tensor,
                                             eval_forward=True)
-    backward_metrics = eval_single_direction(predictor,
-                                             entity_tensor=entity_tensor,
-                                             eval_forward=False)
-    metrics = {k: round((forward_metrics[k] + backward_metrics[k]) / 2, 4) for k in forward_metrics}
-    logger.info('Averaged metrics: {}'.format(metrics))
+    # backward_metrics = eval_single_direction(predictor,
+    #                                          entity_tensor=entity_tensor,
+    #                                          eval_forward=False)
+    # metrics = {k: round((forward_metrics[k] + backward_metrics[k]) / 2, 4) for k in forward_metrics}
+    # logger.info('Averaged metrics: {}'.format(metrics))
 
     prefix, basename = os.path.dirname(args.eval_model_path), os.path.basename(args.eval_model_path)
     split = os.path.basename(args.valid_path)
     with open('{}/metrics_{}_{}.json'.format(prefix, split, basename), 'w', encoding='utf-8') as writer:
-        writer.write('forward metrics: {}\n'.format(json.dumps(forward_metrics)))
-        writer.write('backward metrics: {}\n'.format(json.dumps(backward_metrics)))
-        writer.write('average metrics: {}\n'.format(json.dumps(metrics)))
+        writer.write('{} metrics: {}\n'.format(args.direction, json.dumps(forward_metrics)))
+        # writer.write('backward metrics: {}\n'.format(json.dumps(backward_metrics)))
+        # writer.write('average metrics: {}\n'.format(json.dumps(metrics)))
 
 
 def eval_single_direction(predictor: BertPredictor,
@@ -135,18 +161,21 @@ def eval_single_direction(predictor: BertPredictor,
                           eval_forward=True,
                           batch_size=256) -> dict:
     start_time = time()
-    examples = load_data(args.valid_path, add_forward_triplet=eval_forward, add_backward_triplet=not eval_forward)
+    examples = load_data(args.valid_path, add_forward_triplet=True, add_backward_triplet=False)
 
     hr_tensor, _ = predictor.predict_by_examples(examples)
     hr_tensor = hr_tensor.to(entity_tensor.device)
-    target = [entity_dict.entity_to_idx(ex.tail_id) for ex in examples]
+    if args.direction == 'forward':
+        target = [entity_dict.entity_to_idx(ex.tail_id) for ex in examples]
+    else:
+        target = [entity_dict.entity_to_idx(ex.head_id) for ex in examples]
     logger.info('predict tensor done, compute metrics...')
 
     topk_scores, topk_indices, metrics, ranks = compute_metrics(hr_tensor=hr_tensor, entities_tensor=entity_tensor,
                                                                 target=target, examples=examples,
                                                                 batch_size=batch_size)
-    eval_dir = 'forward' if eval_forward else 'backward'
-    logger.info('{} metrics: {}'.format(eval_dir, json.dumps(metrics)))
+
+    logger.info('{} metrics: {}'.format(args.direction, json.dumps(metrics)))
 
     pred_infos = []
     for idx, ex in enumerate(examples):
@@ -156,17 +185,25 @@ def eval_single_direction(predictor: BertPredictor,
         cur_score_info = {entity_dict.get_entity_by_idx(topk_idx).entity: round(topk_score, 3)
                           for topk_score, topk_idx in zip(cur_topk_scores, cur_topk_indices)}
 
-        pred_info = PredInfo(head=ex.head, relation=ex.relation,
-                             tail=ex.tail, pred_tail=entity_dict.get_entity_by_idx(pred_idx).entity,
-                             pred_score=round(cur_topk_scores[0], 4),
-                             topk_score_info=json.dumps(cur_score_info),
-                             rank=ranks[idx],
-                             correct=pred_idx == target[idx])
+        if args.direction == 'forward':
+            pred_info = PredInfo(head=ex.head, relation=ex.relation,
+                                tail=ex.tail, pred_tail=entity_dict.get_entity_by_idx(pred_idx).entity,
+                                pred_score=round(cur_topk_scores[0], 4),
+                                topk_score_info=json.dumps(cur_score_info),
+                                rank=ranks[idx],
+                                correct=pred_idx == target[idx])
+        else:
+            pred_info = PredInfoRT(head=ex.head, relation=ex.relation,
+                                tail=ex.tail, pred_head=entity_dict.get_entity_by_idx(pred_idx).entity,
+                                pred_score=round(cur_topk_scores[0], 4),
+                                topk_score_info=json.dumps(cur_score_info),
+                                rank=ranks[idx],
+                                correct=pred_idx == target[idx])
         pred_infos.append(pred_info)
 
     prefix, basename = os.path.dirname(args.eval_model_path), os.path.basename(args.eval_model_path)
     split = os.path.basename(args.valid_path)
-    with open('{}/eval_{}_{}_{}.json'.format(prefix, split, eval_dir, basename), 'w', encoding='utf-8') as writer:
+    with open('{}/eval_{}_{}_{}.json'.format(prefix, split, args.direction, basename), 'w', encoding='utf-8') as writer:
         writer.write(json.dumps([asdict(info) for info in pred_infos], ensure_ascii=False, indent=4))
 
     logger.info('Evaluation takes {} seconds'.format(round(time() - start_time, 3)))

@@ -42,11 +42,55 @@ def construct_mask(row_exs: List, col_exs: List = None) -> torch.tensor:
     return triplet_mask
 
 
+# h + rt version
+def construct_mask_rt(row_exs: List, col_exs: List = None) -> torch.tensor:
+    positive_on_diagonal = col_exs is None
+    num_row = len(row_exs)
+    col_exs = row_exs if col_exs is None else col_exs
+    num_col = len(col_exs)
+
+    # exact match
+    row_entity_ids = torch.LongTensor([entity_dict.entity_to_idx(ex.head_id) for ex in row_exs])
+    col_entity_ids = row_entity_ids if positive_on_diagonal else \
+        torch.LongTensor([entity_dict.entity_to_idx(ex.head_id) for ex in col_exs])
+    # num_row x num_col
+    triplet_mask = (row_entity_ids.unsqueeze(1) != col_entity_ids.unsqueeze(0))
+    if positive_on_diagonal:
+        triplet_mask.fill_diagonal_(True)
+
+    # mask out other possible neighbors
+    for i in range(num_row):
+        tail_id, relation = row_exs[i].tail_id, row_exs[i].relation
+        neighbor_ids = train_triplet_dict.get_neighbors_rt(tail_id, relation)
+        # exact match is enough, no further check needed
+        if len(neighbor_ids) <= 1:
+            continue
+
+        for j in range(num_col):
+            if i == j and positive_on_diagonal:
+                continue
+            head_id = col_exs[j].head_id
+            if head_id in neighbor_ids:
+                triplet_mask[i][j] = False
+
+    return triplet_mask
+
+
 def construct_self_negative_mask(exs: List) -> torch.tensor:
     mask = torch.ones(len(exs))
     for idx, ex in enumerate(exs):
         head_id, relation = ex.head_id, ex.relation
         neighbor_ids = train_triplet_dict.get_neighbors(head_id, relation)
         if head_id in neighbor_ids:
+            mask[idx] = 0
+    return mask.bool()
+
+
+def construct_self_negative_mask_rt(exs: List) -> torch.tensor:
+    mask = torch.ones(len(exs))
+    for idx, ex in enumerate(exs):
+        tail_id, relation = ex.tail_id, ex.relation
+        neighbor_ids = train_triplet_dict.get_neighbors_rt(tail_id, relation)
+        if tail_id in neighbor_ids:
             mask[idx] = 0
     return mask.bool()

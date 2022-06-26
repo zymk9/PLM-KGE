@@ -20,7 +20,7 @@ def rerank_by_graph(batch_score: torch.tensor,
 
     for idx in range(batch_score.size(0)):
         cur_ex = examples[idx]
-        n_hop_indices = get_link_graph().get_n_hop_entity_indices(cur_ex.head_id,
+        n_hop_indices = get_link_graph().get_n_hop_entity_indices(cur_ex.head_id if args.direction == 'forward' else cur_ex.tail_id,
                                                                   entity_dict=entity_dict,
                                                                   n_hop=args.rerank_n_hop)
         delta = torch.tensor([args.neighbor_weight for _ in n_hop_indices]).to(batch_score.device)
