@@ -72,16 +72,6 @@ parser.add_argument('--seed', default=None, type=int,
 # Commonsense enhancement
 parser.add_argument('--concept-path', default='', type=str, 
                     help='path to concept data')
-# parser.add_argument('--t-scale', default=1.05, type=float,
-#                     help='temperature scaling')              
-parser.add_argument('--use-concept-data', action='store_true',
-                    help='use the concept data to adjust the contrastive loss')      
-parser.add_argument('--use-multitask', action='store_true',
-                    help='use multitask learning')
-parser.add_argument('--multitask-weight', default=0.5, type=float,
-                    help='weight for multitask loss')
-parser.add_argument('--inverse-only', action='store_true',
-                    help='use only inversed relations')
 
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',
