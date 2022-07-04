@@ -134,6 +134,8 @@ class ConceptDict:
         self.ent2dom = {}   # entity idx -> set(domain idx)
         self.rel2idx = {}   # relation -> idx
         self.ent2idx = {}   # entity id -> idx
+        self.idx2ent = {}   # idx -> entity id
+        self.idx2rel = {}   # idx -> relation
 
         self._load(concept_dict_dir)
         self._add_inversed_relations()
@@ -163,19 +165,23 @@ class ConceptDict:
             for line in f:
                 rel_idx, rel = line.strip().split('\t')
                 self.rel2idx[_normalize_fb15k237_relation(rel)] = int(rel_idx)  # consistent with SimKGC
+                self.idx2rel[int(rel_idx)] = rel
 
         with open(os.path.join(dir, 'entities.dict')) as f:
             for line in f:
                 ent_idx, ent = line.strip().split('\t')
                 self.ent2idx[ent] = int(ent_idx)
+                self.idx2ent[int(ent_idx)] = ent
 
     # Add concept data for inversed relations
     def _add_inversed_relations(self):
         cur_idx = max(self.rel2idx.values()) + 1
         inv_rel_dict = {}
+        inv_idx_dict = {}
         for rel, idx in self.rel2idx.items():
             inv_rel = "inverse {}".format(rel)
             inv_rel_dict[inv_rel] = cur_idx
+            inv_idx_dict[cur_idx] = inv_rel
             self.rel2dom_h[cur_idx] = self.rel2dom_t[idx]
             self.rel2dom_t[cur_idx] = self.rel2dom_h[idx]
             
@@ -186,6 +192,7 @@ class ConceptDict:
             cur_idx += 1
         
         self.rel2idx.update(inv_rel_dict)
+        self.idx2rel.update(inv_idx_dict)
 
     def get_rel_type(self, rel: str) -> int:
         return self.rel2nn[self.rel2idx[rel]]
@@ -216,6 +223,70 @@ class ConceptDict:
     def get_class_weights(self):
         return compute_class_weight('balanced', classes=np.array([0, 1, 2, 3]), 
             y=np.array([v for k, v in self.rel2nn.items()]))
+
+    def concept_filter_h(self, head_id: str, relation: str):
+        if str(relation) not in self.rel2idx:
+            return []
+
+        rel_idx = self.rel2idx[relation]
+        rel_hc = self.rel2dom_h[rel_idx]
+        set_hc = rel_hc
+        h = []
+
+        if self.rel2nn[rel_idx] == 0 or self.rel2nn[rel_idx] == 1:
+            if head_id not in self.ent2idx:
+                for hc in rel_hc:
+                    for ent in self.conc_ents[hc]:
+                        h.append(ent)
+            else:
+                for dom in self.ent2dom[self.ent2idx[head_id]]:
+                    for ent in self.dom2ent[dom]:
+                        h.append(ent)
+        else:
+            if head_id in self.ent2idx:
+                set_ent_dom = self.ent2dom[self.ent2idx[head_id]]
+            else:
+                set_ent_dom = set([])
+            set_diff = set_hc - set_ent_dom
+            set_diff = list(set_diff)
+            for dom in set_diff:
+                for ent in self.dom2ent[dom]:
+                    h.append(ent)
+
+        h = set(h)
+        return list(h)
+
+    def concept_filter_t(self, tail_id: str, relation: str):
+        if relation not in self.rel2idx:
+            return []
+
+        rel_idx = self.rel2idx[relation]
+        rel_tc = self.rel2dom_t[rel_idx]
+        set_tc = rel_tc
+        t = []
+
+        if self.rel2nn[rel_idx] == 0 or self.rel2nn[rel_idx] == 2:
+            if tail_id in self.ent2idx:
+                for dom in self.ent2dom[self.ent2idx[tail_id]]:
+                    for ent in self.dom2ent[dom]:
+                        t.append(ent)
+            else:
+                for tc in rel_tc:
+                    for ent in self.dom2ent[tc]:
+                        t.append(ent)
+        else:
+            if tail_id in self.ent2idx:
+                set_ent_dom = self.ent2dom[self.ent2idx[tail_id]]
+            else:
+                set_ent_dom = set([])
+            set_diff = set_tc - set_ent_dom
+            set_diff = list(set_diff)
+            for dom in set_diff:
+                for ent in self.dom2ent[dom]:
+                    t.append(ent)
+
+        t = set(t)
+        return list(t)
 
 
 def reverse_triplet(obj):

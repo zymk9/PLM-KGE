@@ -1,8 +1,10 @@
 import os
 import json
+from turtle import pos
 import torch
 import torch.utils.data.dataset
 import warnings
+import numpy as np
 
 from typing import Optional, List
 
@@ -102,23 +104,12 @@ class Example:
         tail_word = _parse_entity_name(self.tail)
         tail_encoded_inputs = _custom_tokenize(text=_concat_name_desc(tail_word, tail_desc))
 
-        rel_type = None
-        # tail_dom = None
-
-        if args.use_concept_data:
-            concept_dict = get_concept_dict()
-            rel_type = concept_dict.get_rel_type(self.relation)
-            # rel_type = 0 if rel_type == 0 or rel_type == 2 else 1   # Only cares about whether tail is unique
-            # tail_dom = concept_dict.duduce_tail_dom(self.tail_id, self.relation)
-
         return {'hr_token_ids': hr_encoded_inputs['input_ids'],
                 'hr_token_type_ids': hr_encoded_inputs['token_type_ids'],
                 'tail_token_ids': tail_encoded_inputs['input_ids'],
                 'tail_token_type_ids': tail_encoded_inputs['token_type_ids'],
                 'head_token_ids': head_encoded_inputs['input_ids'],
                 'head_token_type_ids': head_encoded_inputs['token_type_ids'],
-                'rel_type': rel_type,
-                # 'tail_dom': tail_dom,
                 'obj': self}
 
 
@@ -143,6 +134,216 @@ class Dataset(torch.utils.data.dataset.Dataset):
 
     def __getitem__(self, index):
         return self.examples[index].vectorize()
+
+
+class TripletDataset(torch.utils.data.dataset.Dataset):
+
+    def __init__(self, path, mode, ns_size):
+        self.path_list = path.split(',')
+        self.mode = mode
+        self.negative_sample_size = ns_size
+        self.nentity = len(get_concept_dict().ent2idx)
+
+        assert all(os.path.exists(path) for path in self.path_list)
+        self.examples = []
+        for path in self.path_list:
+            if not self.examples:
+                self.examples = load_data(path, not args.inverse_only)
+            else:
+                self.examples.extend(load_data(path, not args.inverse_only))
+
+        self.count_frequency()
+        self.get_true_head_and_tail()
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, index):
+        positive_sample = self.examples[index]
+        head = positive_sample.head_id
+        tail = positive_sample.tail_id
+        relation = positive_sample.relation
+
+        subsampling_weight = self.count[(head, relation)] + self.count[(relation, tail)]
+        subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
+        
+        negative_sample_list = []
+        negative_sample_size = 0
+        if self.mode == "head-batch":
+            e_filter = self.concept_filter_h(head, relation)
+        if self.mode == "tail-batch":
+            e_filter = self.concept_filter_t(tail, relation)
+        if len(e_filter) > 0:
+            ns_size = min(self.negative_sample_size, len(e_filter))
+            negative_sample = np.random.choice(e_filter, ns_size)
+            if self.mode == 'head-batch':
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_head[(relation, tail)], 
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'tail-batch':
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_tail[(head, relation)], 
+                    assume_unique=True, 
+                    invert=True
+                )
+            else:
+                raise ValueError('Training batch mode %s not supported' % self.mode)
+            negative_sample = negative_sample[mask]
+            negative_sample_list.append(negative_sample)
+            negative_sample_size = negative_sample.size
+
+        while negative_sample_size < self.negative_sample_size:
+            negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size)
+
+            if self.mode == 'head-batch':
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_head[(relation, tail)], 
+                    assume_unique=True, 
+                    invert=True
+                )
+            elif self.mode == 'tail-batch':
+                mask = np.in1d(
+                    negative_sample, 
+                    self.true_tail[(head, relation)], 
+                    assume_unique=True, 
+                    invert=True
+                )
+            else:
+                raise ValueError('Training batch mode %s not supported' % self.mode)
+            negative_sample = negative_sample[mask]
+            negative_sample_list.append(negative_sample)
+            negative_sample_size += negative_sample.size
+        
+        negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size]
+
+        if self.mode == 'head-batch':
+            neg_ex = [Example(head, relation, tail) for head in np.nditer(negative_sample)]
+        else:
+            neg_ex = [Example(head, relation, tail) for tail in np.nditer(negative_sample)]
+        
+        neg_vec = [ex.vectorize() for ex in neg_ex]
+            
+        return positive_sample.vectorize(), neg_vec, subsampling_weight, self.negative_sample_size
+
+    def count_frequency(self, start=4):
+        self.count = {}
+        for ex in self.examples:
+            head = ex.head_id
+            tail = ex.tail_id
+            relation = ex.relation
+            if (head, relation) not in self.count:
+                self.count[(head, relation)] = start
+            else:
+                self.count[(head, relation)] += 1
+
+            if (relation, tail) not in self.count:
+                self.count[(relation, tail)] = start
+            else:
+                self.count[(relation, tail)] += 1
+
+    def get_true_head_and_tail(self):
+        self.true_head = {}
+        self.true_tail = {}
+
+        for ex in self.examples:
+            head = ex.head_id
+            tail = ex.tail_id
+            relation = ex.relation
+            if (head, relation) not in self.true_tail:
+                self.true_tail[(head, relation)] = []
+            self.true_tail[(head, relation)].append(tail)
+            if (relation, tail) not in self.true_head:
+                self.true_head[(relation, tail)] = []
+            self.true_head[(relation, tail)].append(head)
+
+        for relation, tail in self.true_head:
+            self.true_head[(relation, tail)] = np.array(list(set(self.true_head[(relation, tail)])))
+        for head, relation in self.true_tail:
+            self.true_tail[(head, relation)] = np.array(list(set(self.true_tail[(head, relation)])))
+
+    @staticmethod
+    def collate_fn(batch_data):
+        pos_ex = [x[0] for x in batch_data]
+        neg_ex = []
+        for x in batch_data:
+            neg_ex += x[1]
+
+        subsampling_weight = torch.tensor([x[2] for x in batch_data])
+
+        pos_hr_token_ids, pos_hr_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['hr_token_ids']) for ex in pos_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        pos_hr_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['hr_token_type_ids']) for ex in pos_ex],
+            need_mask=False)
+
+        pos_tail_token_ids, pos_tail_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['tail_token_ids']) for ex in pos_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        pos_tail_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['tail_token_type_ids']) for ex in pos_ex],
+            need_mask=False)
+
+        pos_head_token_ids, pos_head_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['head_token_ids']) for ex in pos_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        pos_head_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['head_token_type_ids']) for ex in pos_ex],
+            need_mask=False)
+
+        neg_hr_token_ids, neg_hr_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['hr_token_ids']) for ex in neg_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        neg_hr_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['hr_token_type_ids']) for ex in neg_ex],
+            need_mask=False)
+
+        neg_tail_token_ids, neg_tail_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['tail_token_ids']) for ex in neg_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        neg_tail_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['tail_token_type_ids']) for ex in neg_ex],
+            need_mask=False)
+
+        neg_head_token_ids, neg_head_mask = to_indices_and_mask(
+            [torch.LongTensor(ex['head_token_ids']) for ex in neg_ex],
+            pad_token_id=get_tokenizer().pad_token_id)
+        neg_head_token_type_ids = to_indices_and_mask(
+            [torch.LongTensor(ex['head_token_type_ids']) for ex in neg_ex],
+            need_mask=False)
+
+        batch_exs = [ex['obj'] for ex in batch_data]
+
+        batch_dict = {
+            'pos_hr_token_ids': pos_hr_token_ids,
+            'pos_hr_mask': pos_hr_mask,
+            'pos_hr_token_type_ids': pos_hr_token_type_ids,
+            'pos_tail_token_ids': pos_tail_token_ids,
+            'pos_tail_mask': pos_tail_mask,
+            'pos_tail_token_type_ids': pos_tail_token_type_ids,
+            'pos_head_token_ids': pos_head_token_ids,
+            'pos_head_mask': pos_head_mask,
+            'pos_head_token_type_ids': pos_head_token_type_ids,
+            'neg_hr_token_ids': neg_hr_token_ids,
+            'neg_hr_mask': neg_hr_mask,
+            'neg_hr_token_type_ids': neg_hr_token_type_ids,
+            'neg_tail_token_ids': neg_tail_token_ids,
+            'neg_tail_mask': neg_tail_mask,
+            'neg_tail_token_type_ids': neg_tail_token_type_ids,
+            'neg_head_token_ids': neg_head_token_ids,
+            'neg_head_mask': neg_head_mask,
+            'neg_head_token_type_ids': neg_head_token_type_ids,
+            'batch_data': batch_exs,
+            'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
+            'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
+        }
+
+        return batch_dict
 
 
 def load_data(path: str,
@@ -192,10 +393,6 @@ def collate(batch_data: List[dict]) -> dict:
 
     batch_exs = [ex['obj'] for ex in batch_data]
 
-    # Pass in concept data
-    rel_types = torch.LongTensor([ex['rel_type'] for ex in batch_data]) if args.use_concept_data else []
-    # tail_doms = torch.LongTensor([ex['tail_dom'] for ex in batch_data]) if args.use_concept_data else []
-
     batch_dict = {
         'hr_token_ids': hr_token_ids,
         'hr_mask': hr_mask,
@@ -207,8 +404,6 @@ def collate(batch_data: List[dict]) -> dict:
         'head_mask': head_mask,
         'head_token_type_ids': head_token_type_ids,
         'batch_data': batch_exs,
-        'rel_types': rel_types,
-        # 'tail_doms': tail_doms,
         'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
         'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
     }
