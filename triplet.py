@@ -234,16 +234,16 @@ class ConceptDict:
         h = []
 
         if self.rel2nn[rel_idx] == 0 or self.rel2nn[rel_idx] == 1:
-            if head_id not in self.ent2idx:
+            if head_id not in self.ent2idx or self.ent2idx[head_id] not in self.ent2dom:
                 for hc in rel_hc:
-                    for ent in self.conc_ents[hc]:
+                    for ent in self.dom2ent[hc]:
                         h.append(ent)
             else:
                 for dom in self.ent2dom[self.ent2idx[head_id]]:
                     for ent in self.dom2ent[dom]:
                         h.append(ent)
         else:
-            if head_id in self.ent2idx:
+            if head_id in self.ent2idx and self.ent2idx[head_id] in self.ent2dom:
                 set_ent_dom = self.ent2dom[self.ent2idx[head_id]]
             else:
                 set_ent_dom = set([])
@@ -254,7 +254,7 @@ class ConceptDict:
                     h.append(ent)
 
         h = set(h)
-        return list(h)
+        return [self.idx2ent[i] for i in h]
 
     def concept_filter_t(self, tail_id: str, relation: str):
         if relation not in self.rel2idx:
@@ -266,7 +266,7 @@ class ConceptDict:
         t = []
 
         if self.rel2nn[rel_idx] == 0 or self.rel2nn[rel_idx] == 2:
-            if tail_id in self.ent2idx:
+            if tail_id in self.ent2idx and self.ent2idx[tail_id] in self.ent2dom:
                 for dom in self.ent2dom[self.ent2idx[tail_id]]:
                     for ent in self.dom2ent[dom]:
                         t.append(ent)
@@ -275,7 +275,7 @@ class ConceptDict:
                     for ent in self.dom2ent[tc]:
                         t.append(ent)
         else:
-            if tail_id in self.ent2idx:
+            if tail_id in self.ent2idx and self.ent2idx[tail_id] in self.ent2dom:
                 set_ent_dom = self.ent2dom[self.ent2idx[tail_id]]
             else:
                 set_ent_dom = set([])
@@ -286,7 +286,7 @@ class ConceptDict:
                     t.append(ent)
 
         t = set(t)
-        return list(t)
+        return [self.idx2ent[i] for i in t]
 
 
 def reverse_triplet(obj):

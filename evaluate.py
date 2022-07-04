@@ -110,7 +110,11 @@ def predict_by_split():
     assert os.path.exists(args.train_path)
 
     predictor = BertPredictor()
-    predictor.load(ckt_path=args.eval_model_path)
+    if not args.load_adapters:
+        predictor.load(ckt_path=args.eval_model_path)
+    else:
+        predictor.load_adapters()
+        
     entity_tensor = predictor.predict_by_entities(entity_dict.entity_exs)
 
     forward_metrics = eval_single_direction(predictor,
@@ -133,7 +137,8 @@ def predict_by_split():
 def eval_single_direction(predictor: BertPredictor,
                           entity_tensor: torch.tensor,
                           eval_forward=True,
-                          batch_size=256) -> dict:
+                          batch_size=256,
+                          output_result=True) -> dict:
     start_time = time()
     examples = load_data(args.valid_path, add_forward_triplet=eval_forward, add_backward_triplet=not eval_forward)
 
@@ -166,8 +171,10 @@ def eval_single_direction(predictor: BertPredictor,
 
     prefix, basename = os.path.dirname(args.eval_model_path), os.path.basename(args.eval_model_path)
     split = os.path.basename(args.valid_path)
-    with open('{}/eval_{}_{}_{}.json'.format(prefix, split, eval_dir, basename), 'w', encoding='utf-8') as writer:
-        writer.write(json.dumps([asdict(info) for info in pred_infos], ensure_ascii=False, indent=4))
+
+    if output_result:
+        with open('{}/eval_{}_{}_{}.json'.format(prefix, split, eval_dir, basename), 'w', encoding='utf-8') as writer:
+            writer.write(json.dumps([asdict(info) for info in pred_infos], ensure_ascii=False, indent=4))
 
     logger.info('Evaluation takes {} seconds'.format(round(time() - start_time, 3)))
     return metrics

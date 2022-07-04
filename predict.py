@@ -4,6 +4,7 @@ import tqdm
 import torch
 import torch.utils.data
 
+from copy import deepcopy
 from typing import List
 from collections import OrderedDict
 
@@ -49,6 +50,28 @@ class BertPredictor:
             self.use_cuda = True
         logger.info('Load model from {} successfully'.format(ckt_path))
 
+    def load_adapters(self):
+        self.train_args.__dict__ = deepcopy(args.__dict__)
+        args.is_test = True
+        build_tokenizer(self.train_args)
+        self.model = build_model(self.train_args)
+
+        self.model.hr_bert.load_adapter(args.link_pred_hr, with_head=False, set_active=True)
+        self.model.tail_bert.load_adapter(args.link_pred_t, with_head=False, set_active=True)
+    
+        self.model.eval()
+        if torch.cuda.is_available():
+            self.model.cuda()
+            self.use_cuda = True
+
+        logger.info('Load adapters successfully')
+
+    def load_existing_model(self, model):
+        self.train_args.__dict__ = deepcopy(args.__dict__)
+        args.is_test = True
+        self.model = model
+        self.use_cuda = True
+
     def _setup_args(self):
         for k, v in args.__dict__.items():
             if k not in self.train_args.__dict__:
@@ -76,26 +99,6 @@ class BertPredictor:
             tail_tensor_list.append(outputs['tail_vector'])
 
         return torch.cat(hr_tensor_list, dim=0), torch.cat(tail_tensor_list, dim=0)
-
-    @torch.no_grad()
-    def predict_t_by_examples(self, examples: List[Example]):
-        data_loader = torch.utils.data.DataLoader(
-            Dataset(path='', examples=examples, task=args.task),
-            num_workers=1,
-            batch_size=max(args.batch_size, 512),
-            collate_fn=collate,
-            shuffle=False)
-
-        hr_tensor_list, tail_tensor_list, t_tensor_list = [], [], []
-        for idx, batch_dict in enumerate(data_loader):
-            if self.use_cuda:
-                batch_dict = move_to_cuda(batch_dict)
-            outputs = self.model(**batch_dict)
-            hr_tensor_list.append(outputs['hr_vector'])
-            t_tensor_list.append(outputs['t'])
-            tail_tensor_list.append(outputs['tail_vector'])
-
-        return torch.cat(hr_tensor_list, dim=0), torch.cat(tail_tensor_list, dim=0), torch.cat(t_tensor_list, dim=0)
 
     @torch.no_grad()
     def predict_by_entities(self, entity_exs) -> torch.tensor:

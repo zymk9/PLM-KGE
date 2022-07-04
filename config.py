@@ -73,6 +73,26 @@ parser.add_argument('--seed', default=None, type=int,
 parser.add_argument('--concept-path', default='', type=str, 
                     help='path to concept data')
 
+# Adapters and multitask
+parser.add_argument('--training-mode', default='', required=True, type=str,
+                    help='training mode, can be either "simkgc", "adapter", "adapter_cake" or "adapterfusion"')
+parser.add_argument('--link-pred-hr', default='', type=str,
+                    help='path to link_pred_hr adapter')
+parser.add_argument('--link-pred-t', default='', type=str,
+                    help='path to link_pred_t adapter')
+parser.add_argument('--load-adapters', action='store_true',
+                    help='load adapters instead of full model checkpoint')
+
+# Conventional KGE and CAKE
+parser.add_argument('--use-nas', action='store_true',
+                    help='use negative adversarial sampling')
+parser.add_argument('--uni-weight', action='store_true',
+                    help='use uniform weight for negative samples')
+parser.add_argument('--adversarial-temperature', default=1.0, type=float,
+                    help='temperature for adversarial sampling')
+parser.add_argument('--ns-size', default=2, type=int,
+                    help='size of negative samples for conventional KGE and CAKE')
+
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',
                     help='is in test mode or not')

@@ -5,13 +5,17 @@ import torch
 import torch.nn as nn
 
 from dataclasses import dataclass
-from transformers import AutoModel, AutoConfig
+from transformers import AutoAdapterModel, AutoConfig, AdapterConfig, AutoModel
+from transformers.adapters.heads import ClassificationHead, PredictionHead
 
 from triplet_mask import construct_mask
 
 
 def build_model(args) -> nn.Module:
-    return CustomBertModel(args)
+    if args.training_mode == 'adapter' or args.training_mode == 'adapter_cake':
+        return BertAdapterModel(args)
+    else:
+        return CustomBertModel(args)
 
 
 @dataclass
@@ -21,8 +25,8 @@ class ModelOutput:
     inv_t: torch.tensor
     hr_vector: torch.tensor
     tail_vector: torch.tensor
-    hr_mean_norm: torch.tensor
-    tail_mean_norm: torch.tensor
+    # hr_mean_norm: torch.tensor
+    # tail_mean_norm: torch.tensor
 
 
 class CustomBertModel(nn.Module, ABC):
@@ -90,10 +94,10 @@ class CustomBertModel(nn.Module, ABC):
         batch_size = hr_vector.size(0)
         labels = torch.arange(batch_size).to(hr_vector.device)
 
-        hr_norms = torch.norm(hr_vector, dim=1).detach()
-        tail_norms = torch.norm(tail_vector, dim=1).detach()
-        hr_mean_norm = torch.mean(hr_norms)
-        tail_mean_norm = torch.mean(tail_norms)
+        # hr_norms = torch.norm(hr_vector, dim=1).detach()
+        # tail_norms = torch.norm(tail_vector, dim=1).detach()
+        # hr_mean_norm = torch.mean(hr_norms)
+        # tail_mean_norm = torch.mean(tail_norms)
 
         logits = hr_vector.mm(tail_vector.t())
         if self.training:
@@ -120,8 +124,9 @@ class CustomBertModel(nn.Module, ABC):
                 'inv_t': self.log_inv_t.detach().exp(),
                 'hr_vector': hr_vector.detach(),
                 'tail_vector': tail_vector.detach(),
-                'hr_mean_norm': hr_mean_norm,
-                'tail_mean_norm': tail_mean_norm}
+                # 'hr_mean_norm': hr_mean_norm,
+                # 'tail_mean_norm': tail_mean_norm
+            }
 
     def _compute_pre_batch_logits(self, hr_vector: torch.tensor,
                                   tail_vector: torch.tensor,
@@ -150,6 +155,88 @@ class CustomBertModel(nn.Module, ABC):
         return {'ent_vectors': ent_vectors.detach()}
 
 
+
+class BertAdapterModel(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.config = AutoConfig.from_pretrained(args.pretrained_model)
+        self.add_margin = args.additive_margin
+        self.batch_size = args.batch_size
+
+        self.hr_bert = AutoAdapterModel.from_pretrained(args.pretrained_model, config=self.config)
+        self.tail_bert = deepcopy(self.hr_bert)
+
+        if 'link_pred_hr' not in self.hr_bert.config.adapters:
+            adapter_config = AdapterConfig.load('houlsby')
+            self.hr_bert.add_adapter('link_pred_hr', config=adapter_config)
+
+        if 'link_pred_t' not in self.tail_bert.config.adapters:
+            adapter_config = AdapterConfig.load('houlsby')
+            self.tail_bert.add_adapter('link_pred_t', config=adapter_config)
+
+        self.hr_bert.train_adapter(['link_pred_hr'])
+        self.tail_bert.train_adapter(['link_pred_t'])
+
+    def _encode(self, encoder, token_ids, mask, token_type_ids):
+        outputs = encoder(input_ids=token_ids,
+                          attention_mask=mask,
+                          token_type_ids=token_type_ids,
+                          return_dict=True)
+
+        last_hidden_state = outputs.last_hidden_state
+        cls_output = last_hidden_state[:, 0, :]
+        cls_output = _pool_output(self.args.pooling, cls_output, mask, last_hidden_state)
+        return cls_output
+
+    def forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
+                tail_token_ids, tail_mask, tail_token_type_ids,
+                head_token_ids, head_mask, head_token_type_ids,
+                batch_data, self_negative_mask,
+                only_ent_embedding=False, **kwargs) -> dict:
+        if only_ent_embedding:
+            return self.predict_ent_embedding(tail_token_ids=tail_token_ids,
+                                              tail_mask=tail_mask,
+                                              tail_token_type_ids=tail_token_type_ids)
+
+        hr_vector = self._encode(self.hr_bert,
+                                 token_ids=hr_token_ids,
+                                 mask=hr_mask,
+                                 token_type_ids=hr_token_type_ids)
+
+        tail_vector = self._encode(self.tail_bert,
+                                   token_ids=tail_token_ids,
+                                   mask=tail_mask,
+                                   token_type_ids=tail_token_type_ids)
+
+        # head_vector = self._encode(self.tail_bert,
+        #                            token_ids=head_token_ids,
+        #                            mask=head_mask,
+        #                            token_type_ids=head_token_type_ids)
+
+        scores = torch.sum(hr_vector * tail_vector, dim=1)
+
+        # if self.args.use_self_negative and self.training:
+        #     self_neg_scores = torch.sum(hr_vector[:batch_size] * head_vector[:batch_size], dim=1)
+        #     self_neg_scores = self_neg_scores[self_negative_mask]
+        #     neg_scores = torch.cat([neg_scores, self_neg_scores], dim=-1)
+
+        # DataParallel only support tensor/dict
+        return {'scores': scores,
+                'hr_vector': hr_vector,
+                'tail_vector': tail_vector,
+                # 'head_vector': head_vector
+                }
+
+    @torch.no_grad()
+    def predict_ent_embedding(self, tail_token_ids, tail_mask, tail_token_type_ids, **kwargs) -> dict:
+        ent_vectors = self._encode(self.tail_bert,
+                                   token_ids=tail_token_ids,
+                                   mask=tail_mask,
+                                   token_type_ids=tail_token_type_ids)
+        return {'ent_vectors': ent_vectors.detach()}
+
+
 def _pool_output(pooling: str,
                  cls_output: torch.tensor,
                  mask: torch.tensor,
@@ -168,5 +255,5 @@ def _pool_output(pooling: str,
     else:
         assert False, 'Unknown pooling mode: {}'.format(pooling)
 
-    # output_vector = nn.functional.normalize(output_vector, dim=1)
+    output_vector = nn.functional.normalize(output_vector, dim=1)
     return output_vector
