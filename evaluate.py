@@ -58,7 +58,13 @@ def compute_metrics(hr_tensor: torch.tensor,
     for start in tqdm.tqdm(range(0, total, batch_size)):
         end = start + batch_size
         # batch_size * entity_cnt
-        batch_score = torch.mm(hr_tensor[start:end, :], entities_tensor.t())
+        if args.similarity != 'l2':
+            batch_score = torch.mm(hr_tensor[start:end, :], entities_tensor.t())
+        else:
+            hr_norm2 = torch.sum(hr_tensor[start:end, :] ** 2, dim=1).unsqueeze(1)
+            entities_norm2 = torch.sum(entities_tensor ** 2, dim=1).unsqueeze(0)
+            batch_score = hr_norm2 + entities_norm2 - 2 * torch.mm(hr_tensor[start:end, :], entities_tensor.t())
+            batch_score = torch.exp(-torch.sqrt(batch_score + 1e-8))
         assert entity_cnt == batch_score.size(1)
         batch_target = target[start:end]
 

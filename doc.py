@@ -1,6 +1,5 @@
 import os
 import json
-from turtle import pos
 import torch
 import torch.utils.data.dataset
 import warnings
@@ -125,9 +124,9 @@ class Dataset(torch.utils.data.dataset.Dataset):
             self.examples = []
             for path in self.path_list:
                 if not self.examples:
-                    self.examples = load_data(path, not args.inverse_only)
+                    self.examples = load_data(path)
                 else:
-                    self.examples.extend(load_data(path, not args.inverse_only))
+                    self.examples.extend(load_data(path))
 
     def __len__(self):
         return len(self.examples)
@@ -148,9 +147,9 @@ class TripletDataset(torch.utils.data.dataset.Dataset):
         self.examples = []
         for path in self.path_list:
             if not self.examples:
-                self.examples = load_data(path, not args.inverse_only)
+                self.examples = load_data(path)
             else:
-                self.examples.extend(load_data(path, not args.inverse_only))
+                self.examples.extend(load_data(path))
 
         self.count_frequency()
         self.get_true_head_and_tail()

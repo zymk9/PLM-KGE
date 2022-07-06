@@ -34,6 +34,7 @@ class CustomBertModel(nn.Module, ABC):
         self.add_margin = args.additive_margin
         self.batch_size = args.batch_size
         self.pre_batch = args.pre_batch
+        self.similarity = args.similarity
         num_pre_batch_vectors = max(1, self.pre_batch) * self.batch_size
         random_vector = torch.randn(num_pre_batch_vectors, self.config.hidden_size)
         self.register_buffer("pre_batch_vectors",
@@ -54,6 +55,10 @@ class CustomBertModel(nn.Module, ABC):
         last_hidden_state = outputs.last_hidden_state
         cls_output = last_hidden_state[:, 0, :]
         cls_output = _pool_output(self.args.pooling, cls_output, mask, last_hidden_state)
+
+        if self.similarity == 'cosine':
+            cls_output = nn.functional.normalize(cls_output, dim=1)
+
         return cls_output
 
     def forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
@@ -95,7 +100,8 @@ class CustomBertModel(nn.Module, ABC):
         hr_mean_norm = torch.mean(hr_norms)
         tail_mean_norm = torch.mean(tail_norms)
 
-        logits = hr_vector.mm(tail_vector.t())
+        logits = self._similarity_func(hr_vector, tail_vector)
+
         if self.training:
             logits -= torch.zeros(logits.size()).fill_diagonal_(self.add_margin).to(logits.device)
         logits *= self.log_inv_t.exp()
@@ -129,7 +135,7 @@ class CustomBertModel(nn.Module, ABC):
         assert tail_vector.size(0) == self.batch_size
         batch_exs = batch_dict['batch_data']
         # batch_size x num_neg
-        pre_batch_logits = hr_vector.mm(self.pre_batch_vectors.clone().t())
+        pre_batch_logits = self._similarity_func(hr_vector, self.pre_batch_vectors.clone())
         pre_batch_logits *= self.log_inv_t.exp() * self.args.pre_batch_weight
         if self.pre_batch_exs[-1] is not None:
             pre_triplet_mask = construct_mask(batch_exs, self.pre_batch_exs).to(hr_vector.device)
@@ -140,6 +146,13 @@ class CustomBertModel(nn.Module, ABC):
         self.offset = (self.offset + self.batch_size) % len(self.pre_batch_exs)
 
         return pre_batch_logits
+
+    def _similarity_func(self, hr, t):
+        if self.similarity == 'l2':
+            logits = torch.sum(hr * hr, dim=1).unsqueeze(1) - 2 * hr.mm(t.t()) + torch.sum(t * t, dim=1).unsqueeze(0)
+            return torch.exp(-torch.sqrt(logits + 1e-8)).clone()
+        else:
+            return hr.mm(t.t())
 
     @torch.no_grad()
     def predict_ent_embedding(self, tail_token_ids, tail_mask, tail_token_type_ids, **kwargs) -> dict:

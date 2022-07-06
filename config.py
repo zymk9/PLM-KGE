@@ -29,7 +29,7 @@ parser.add_argument('--dropout', default=0.1, type=float, metavar='N',
                     help='dropout on final linear layer')
 parser.add_argument('--use-amp', action='store_true',
                     help='Use amp if available')
-parser.add_argument('--t', default=0.01, type=float,
+parser.add_argument('--t', default=0.05, type=float,
                     help='temperature parameter')
 parser.add_argument('--use-link-graph', action='store_true',
                     help='use neighbors from link graph as context')
@@ -72,6 +72,8 @@ parser.add_argument('--seed', default=None, type=int,
 # Commonsense enhancement
 parser.add_argument('--concept-path', default='', type=str, 
                     help='path to concept data')
+parser.add_argument('--similarity', default='cosine', type=str,
+                    help='similarity measure to use')
 
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',
