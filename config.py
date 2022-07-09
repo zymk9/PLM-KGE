@@ -74,6 +74,10 @@ parser.add_argument('--concept-path', default='', type=str,
                     help='path to concept data')
 parser.add_argument('--similarity', default='cosine', type=str,
                     help='similarity measure to use')
+parser.add_argument('--no-desc', action='store_true',
+                    help='do not use description as context')
+parser.add_argument('--no-pretraining', action='store_true',
+                    help='do not use pretrained BERT')
 
 # only used for evaluation
 parser.add_argument('--is-test', action='store_true',

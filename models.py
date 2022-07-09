@@ -1,11 +1,12 @@
 from abc import ABC
 from copy import deepcopy
+from distutils.command.config import config
 
 import torch
 import torch.nn as nn
 
 from dataclasses import dataclass
-from transformers import AutoModel, AutoConfig
+from transformers import AutoModel, AutoConfig, BertModel
 
 from triplet_mask import construct_mask
 
@@ -43,7 +44,11 @@ class CustomBertModel(nn.Module, ABC):
         self.offset = 0
         self.pre_batch_exs = [None for _ in range(num_pre_batch_vectors)]
 
-        self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
+        if not args.no_pretraining:
+            self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
+        else:
+            self.hr_bert = BertModel(config=self.config)
+
         self.tail_bert = deepcopy(self.hr_bert)
 
     def _encode(self, encoder, token_ids, mask, token_type_ids):
