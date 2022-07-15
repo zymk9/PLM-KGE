@@ -113,6 +113,36 @@ class Example:
                 'obj': self}
 
 
+class CustomExample(Example):
+
+    def __init__(self, head_id, relation, tail_id, head_desc, tail_desc, **kwargs):
+        super.__init__(head_id, relation, tail_id, **kwargs)
+        self._head_desc = head_desc
+        self._tail_desc = tail_desc
+
+    def vectorize(self) -> dict:
+        head_desc, tail_desc = self._head_desc, self._tail_desc
+
+        head_word = _parse_entity_name(self.head)
+        head_text = _concat_name_desc(head_word, head_desc) if not args.no_desc else head_word
+        hr_encoded_inputs = _custom_tokenize(text=head_text,
+                                             text_pair=self.relation)
+
+        head_encoded_inputs = _custom_tokenize(text=head_text)
+
+        tail_word = _parse_entity_name(self.tail)
+        tail_text = _concat_name_desc(tail_word, tail_desc) if not args.no_desc else tail_word
+        tail_encoded_inputs = _custom_tokenize(text=tail_text)
+
+        return {'hr_token_ids': hr_encoded_inputs['input_ids'],
+                'hr_token_type_ids': hr_encoded_inputs['token_type_ids'],
+                'tail_token_ids': tail_encoded_inputs['input_ids'],
+                'tail_token_type_ids': tail_encoded_inputs['token_type_ids'],
+                'head_token_ids': head_encoded_inputs['input_ids'],
+                'head_token_type_ids': head_encoded_inputs['token_type_ids'],
+                'obj': self}
+    
+
 class Dataset(torch.utils.data.dataset.Dataset):
 
     def __init__(self, path, task, examples=None):
