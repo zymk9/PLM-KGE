@@ -11,6 +11,7 @@ Results for ablation models are under [ablation](ablation/).
 Other branches in the repo are our attempts to improve SimKGC. Most of these results are not ideal and thus are not covered in the report. A brief overview of these branches:
 
 - `similarity-metrics`: Replacing cosine similarity with dot product or euclidean distance.
-- `cake-loss` and `loss-func`: Attempt to design a commonsense-aware loss function or negative sampler similar to CAKE.
+- `negsamples`: Attempt to design a commonsense-aware negative sampler similar to CAKE.
+- `cake-loss` and `loss-func`: Attempt to design a commonsense-aware or a relation type-aware loss function.
 - `ensemble`: Reverse the hr + t structure of SimKGC to investigate the backward performance.
 - `adapter`: Incorporating concept prediction task through AdapterFusion.
